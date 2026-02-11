@@ -1,0 +1,80 @@
+# eBird Status and Trends Data Download Script
+# Downloads weekly abundance GeoTIFF rasters for bird migration analysis.
+# Requires: R, ebirdst package, config.R with access key
+
+# Find project root (directory containing config.R)
+args <- commandArgs(trailingOnly = FALSE)
+file_arg <- args[grep("^--file=", args)]
+if (length(file_arg) > 0) {
+  script_path <- normalizePath(sub("^--file=", "", file_arg))
+  project_root <- dirname(dirname(script_path))
+} else {
+  project_root <- getwd()
+}
+config_path <- file.path(project_root, "config.R")
+
+if (!file.exists(config_path)) {
+  stop("Config file not found: ", config_path, "\n",
+       "Ensure config.R exists in the project root.")
+}
+
+source(config_path)
+
+# Validate access key (not required for yebsap-example)
+needs_key <- !all(SPECIES_CODES %in% c("yebsap-example"))
+if (needs_key && (is.null(ACCESS_KEY) || ACCESS_KEY == "" || ACCESS_KEY == "your_key_here")) {
+  stop("Access key required. Edit config.R with your key from https://ebird.org/st/request")
+}
+
+# Load ebirdst
+if (!requireNamespace("ebirdst", quietly = TRUE)) {
+  stop("ebirdst package required. Install with: install.packages(\"ebirdst\")")
+}
+library(ebirdst)
+
+# Set access key
+if (!needs_key) {
+  message("Using example dataset (no key required)")
+} else {
+  set_ebirdst_access_key(ACCESS_KEY)
+}
+
+# Resolve output path
+output_path <- normalizePath(file.path(project_root, OUTPUT_DIR), mustWork = FALSE)
+if (!dir.exists(output_path)) {
+  dir.create(output_path, recursive = TRUE)
+  message("Created output directory: ", output_path)
+}
+
+# Resolution pattern for ebirdst (filters which GeoTIFFs to download)
+resolution_pattern <- paste0("_", RESOLUTION, "_")
+
+# Download each species
+downloaded <- character(0)
+for (species in SPECIES_CODES) {
+  message("Downloading ", species, " (resolution: ", RESOLUTION, ")...")
+  tryCatch({
+    path <- ebirdst_download_status(
+      species = species,
+      path = output_path,
+      pattern = resolution_pattern,
+      download_all = DOWNLOAD_ALL,
+      force = FALSE,
+      show_progress = TRUE
+    )
+    downloaded <- c(downloaded, species)
+    message("  -> ", path)
+  }, error = function(e) {
+    message("  FAILED: ", conditionMessage(e))
+  })
+}
+
+# Summary
+message("")
+message("Download complete. Species: ", paste(downloaded, collapse = ", "))
+if (length(downloaded) == 0) {
+  message("No data downloaded. Check species codes and access key.")
+} else {
+  message("Data location: ", output_path)
+  message("GeoTIFF files can be read in Python with rasterio.")
+}

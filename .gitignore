@@ -1,0 +1,38 @@
+# Data (large files, raw downloads)
+data/raw/
+data/processed/
+
+# Config with secrets (edits are local only)
+config.R
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# R
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
