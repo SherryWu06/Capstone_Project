@@ -2,7 +2,7 @@
 # Edit this file with your access key and species. Your edits are gitignored.
 
 # Access key from https://ebird.org/st/request
-ACCESS_KEY <- "your_key_here"
+ACCESS_KEY <- "jqget4rqcv00"
 
 # Species to download (common name, scientific name, or 6-letter code)
 # Examples: "woothr", "Yellow-bellied Sapsucker", "Sphyrapicus varius"

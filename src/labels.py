@@ -64,3 +64,32 @@ def build_week_labels(
                         break
 
     return labels, class_names
+
+
+# Season names that indicate movement (migration)
+MIGRATION_SEASONS = {"prebreeding_migration", "postbreeding_migration"}
+
+
+def build_binary_labels(
+    date_names: list[str],
+    season_dates: list[dict[str, Any]],
+    year: int = 2023,
+) -> tuple[np.ndarray, list[str]]:
+    """
+    Map each week to binary: movement (1) vs no movement (0).
+    Migration = movement; breeding/nonbreeding = no movement.
+
+    Returns:
+        labels: 0 or 1 per week
+        class_names: ["no_movement", "movement"]
+    """
+    labels_4, _ = build_week_labels(date_names, season_dates, year)
+    class_names = ["no_movement", "movement"]
+
+    # Map: migration -> 1, breeding/nonbreeding -> 0
+    season_to_binary = {}
+    for j, s in enumerate(season_dates):
+        season_to_binary[j] = 1 if s["season"] in MIGRATION_SEASONS else 0
+
+    binary = np.array([season_to_binary.get(l, 0) for l in labels_4])
+    return binary, class_names

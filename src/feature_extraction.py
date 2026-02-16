@@ -129,3 +129,60 @@ def compute_global_features(stack: np.ndarray) -> dict:
         "centroid_displacement": disp,
         "change_magnitude": chg,
     }
+
+
+def compute_local_features(
+    stack: np.ndarray,
+    cell_size: int = 64,
+) -> tuple[np.ndarray, tuple[int, int]]:
+    """
+    Compute per-region movement features. Divides raster into grid cells.
+
+    Args:
+        stack: (n_weeks, height, width) abundance
+        cell_size: pixels per cell (height and width)
+
+    Returns:
+        X_local: (n_cells, n_weeks, n_features) - 7 features per cell per week
+        grid_shape: (n_rows, n_cols) number of cells
+    """
+    n_weeks, h, w = stack.shape
+    n_rows = max(1, h // cell_size)
+    n_cols = max(1, w // cell_size)
+    n_cells = n_rows * n_cols
+
+    # Features: centroid_row, centroid_col, variance, entropy, disp, change, week
+    n_feat = 7
+    X_local = np.full((n_cells, n_weeks, n_feat), np.nan, dtype=np.float32)
+
+    for ri in range(n_rows):
+        for ci in range(n_cols):
+            cell_id = ri * n_cols + ci
+            r0, r1 = ri * cell_size, min((ri + 1) * cell_size, h)
+            c0, c1 = ci * cell_size, min((ci + 1) * cell_size, w)
+
+            centroids = []
+            variances = []
+            entropies = []
+
+            for t in range(n_weeks):
+                arr = stack[t, r0:r1, c0:c1].astype(float)
+                arr[~np.isfinite(arr)] = np.nan
+                cy, cx = weighted_centroid(arr)
+                centroids.append((cy, cx))
+                variances.append(spatial_variance(arr, (cy, cx)))
+                entropies.append(spatial_entropy(arr))
+
+            disp = centroid_displacement(centroids)
+            chg = change_magnitude(stack[:, r0:r1, c0:c1])
+
+            for t in range(n_weeks):
+                X_local[cell_id, t, 0] = centroids[t][0] if not np.isnan(centroids[t][0]) else 0
+                X_local[cell_id, t, 1] = centroids[t][1] if not np.isnan(centroids[t][1]) else 0
+                X_local[cell_id, t, 2] = variances[t] if not np.isnan(variances[t]) else 0
+                X_local[cell_id, t, 3] = entropies[t] if not np.isnan(entropies[t]) else 0
+                X_local[cell_id, t, 4] = disp[t - 1] if t > 0 and not np.isnan(disp[t - 1]) else 0
+                X_local[cell_id, t, 5] = (chg[t - 1] / 1e6) if t > 0 else 0
+                X_local[cell_id, t, 6] = t + 1  # week of year
+
+    return X_local, (n_rows, n_cols)

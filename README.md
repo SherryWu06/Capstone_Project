@@ -57,11 +57,22 @@ pip install -r requirements.txt
 
 ### Run baseline (end-to-end)
 
+**Phase 1 – Movement vs no movement (default):**
 ```bash
 python scripts/run_baseline.py
 ```
+Binary: migration = movement, breeding/nonbreeding = no movement.
 
-Loads data, extracts movement features, maps weeks to season labels, trains a Random Forest with time-series CV, and prints accuracy.
+**Phase 1 – Four-class (optional):**
+```bash
+python scripts/run_baseline.py --4class
+```
+
+**Phase 2 – Per-region prediction:**
+```bash
+python scripts/run_baseline.py --regional
+```
+Uses local features per grid cell for finer spatial granularity. Labels are global (weak supervision); infrastructure supports future per-location labels. Use `--cell-size 32` for finer grid (default: 64).
 
 ### Quick test
 

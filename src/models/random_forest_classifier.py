@@ -38,6 +38,24 @@ def build_feature_matrix(features: dict, n_weeks: int) -> np.ndarray:
     return X
 
 
+def build_regional_feature_matrix(
+    X_local: np.ndarray,
+    labels: np.ndarray,
+    n_weeks: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Flatten per-region features for classification.
+    X_local: (n_cells, n_weeks, n_features)
+    labels: (n_weeks,) global labels
+    Returns X, y ordered by week (for time-series CV).
+    """
+    n_cells, _, n_feat = X_local.shape
+    # Order by week: week 0 (all cells), week 1 (all cells), ...
+    X_flat = X_local.transpose(1, 0, 2).reshape(n_weeks * n_cells, n_feat)
+    y_flat = np.repeat(labels, n_cells)
+    return X_flat, y_flat
+
+
 def train_and_evaluate(
     X: np.ndarray,
     y: np.ndarray,
