@@ -47,12 +47,17 @@ if (!dir.exists(output_path)) {
 }
 
 # Resolution pattern for ebirdst (filters which GeoTIFFs to download)
-resolution_pattern <- paste0("_", RESOLUTION, "_")
+# Note: yebsap-example only has 27km resolution
+resolution_for_species <- function(species) {
+  if (species == "yebsap-example") "27km" else RESOLUTION
+}
 
 # Download each species
 downloaded <- character(0)
 for (species in SPECIES_CODES) {
-  message("Downloading ", species, " (resolution: ", RESOLUTION, ")...")
+  res <- resolution_for_species(species)
+  resolution_pattern <- paste0("_", res, "_")
+  message("Downloading ", species, " (resolution: ", res, ")...")
   tryCatch({
     path <- ebirdst_download_status(
       species = species,
