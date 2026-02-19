@@ -143,7 +143,7 @@ def compute_local_features(
         cell_size: pixels per cell (height and width)
 
     Returns:
-        X_local: (n_cells, n_weeks, n_features) - 7 features per cell per week
+        X_local: (n_cells, n_weeks, n_features) - 6 features per cell per week
         grid_shape: (n_rows, n_cols) number of cells
     """
     n_weeks, h, w = stack.shape
@@ -151,8 +151,8 @@ def compute_local_features(
     n_cols = max(1, w // cell_size)
     n_cells = n_rows * n_cols
 
-    # Features: centroid_row, centroid_col, variance, entropy, disp, change, week
-    n_feat = 7
+    # Features: centroid_row, centroid_col, variance, entropy, disp, change
+    n_feat = 6
     X_local = np.full((n_cells, n_weeks, n_feat), np.nan, dtype=np.float32)
 
     for ri in range(n_rows):
@@ -183,6 +183,5 @@ def compute_local_features(
                 X_local[cell_id, t, 3] = entropies[t] if not np.isnan(entropies[t]) else 0
                 X_local[cell_id, t, 4] = disp[t - 1] if t > 0 and not np.isnan(disp[t - 1]) else 0
                 X_local[cell_id, t, 5] = (chg[t - 1] / 1e6) if t > 0 else 0
-                X_local[cell_id, t, 6] = t + 1  # week of year
 
     return X_local, (n_rows, n_cols)

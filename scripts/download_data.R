@@ -20,6 +20,15 @@ if (!file.exists(config_path)) {
 
 source(config_path)
 
+# Option: use species from Matt's CSV instead of SPECIES_CODES
+if (exists("USE_MATT_SPECIES_CSV") && USE_MATT_SPECIES_CSV) {
+  csv_path <- file.path(project_root, "data", "raw", "Matt", "us-breeding-species.csv")
+  if (file.exists(csv_path)) {
+    SPECIES_CODES <- read.csv(csv_path)$species_code
+    message("Using ", length(SPECIES_CODES), " species from us-breeding-species.csv")
+  }
+}
+
 # Validate access key (not required for yebsap-example)
 needs_key <- !all(SPECIES_CODES %in% c("yebsap-example"))
 if (needs_key && (is.null(ACCESS_KEY) || ACCESS_KEY == "" || ACCESS_KEY == "your_key_here")) {

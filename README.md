@@ -41,6 +41,8 @@ source("scripts/download_data.R")
 
 **Test without a key**: Use `SPECIES_CODES <- c("yebsap-example")` for a small Yellow-bellied Sapsucker dataset in Michigan.
 
+**Use Matt's species list**: Add `USE_MATT_SPECIES_CSV <- TRUE` to config.R to download all species from `data/raw/Matt/us-breeding-species.csv` (requires access key).
+
 ## Python Analysis
 
 After downloading data, use Python for ML and analysis:
@@ -73,6 +75,26 @@ python scripts/run_baseline.py --4class
 python scripts/run_baseline.py --regional
 ```
 Uses local features per grid cell for finer spatial granularity. Labels are global (weak supervision); infrastructure supports future per-location labels. Use `--cell-size 32` for finer grid (default: 64).
+
+### Matt's data (data/raw/Matt/)
+
+For TIF files from Matt (flat layout, no config.json):
+
+1. **Export season labels** (run once; requires R + ebirdst):
+   ```bash
+   .\scripts\run_export_seasons.ps1
+   ```
+   Creates `data/labels/matt_species_seasons.json` from `us-breeding-species.csv`.
+
+2. **Run baseline on Matt data:**
+   ```bash
+   python scripts/run_baseline.py --matt --species acafly
+   ```
+
+3. **Combine all sources** (ebirdst + Matt species with data):
+   ```bash
+   python scripts/run_baseline.py --source all
+   ```
 
 ### Quick test
 

@@ -23,9 +23,6 @@ def build_feature_matrix(features: dict, n_weeks: int) -> np.ndarray:
     disp = np.concatenate([[0], features["centroid_displacement"]])
     chg = np.concatenate([[0], features["change_magnitude"]])
 
-    # Week of year (1-52)
-    week_of_year = np.arange(1, n_weeks + 1, dtype=float)
-
     X = np.column_stack([
         centroid_row,
         centroid_col,
@@ -33,7 +30,6 @@ def build_feature_matrix(features: dict, n_weeks: int) -> np.ndarray:
         spatial_entropy,
         disp,
         chg / 1e6,  # scale
-        week_of_year,
     ])
     return X
 
@@ -95,6 +91,41 @@ def train_and_evaluate(
         "train_accuracy": accuracy_score(y, y_pred),
         "classification_report": classification_report(y, y_pred, target_names=target_names),
         "confusion_matrix": confusion_matrix(y, y_pred),
+        "model": clf,
+        "scaler": scaler,
+    }
+
+
+def train_and_evaluate_species_split(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    class_names: list[str] | None = None,
+    random_state: int = 42,
+) -> dict:
+    """
+    Train on train species, evaluate on held-out test species.
+    Tests generalization to unseen species.
+    """
+    scaler = StandardScaler()
+    clf = RandomForestClassifier(n_estimators=100, random_state=random_state)
+
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s = scaler.transform(X_test)
+
+    clf.fit(X_train_s, y_train)
+    y_train_pred = clf.predict(X_train_s)
+    y_test_pred = clf.predict(X_test_s)
+
+    target_names = class_names or [str(i) for i in range(len(np.unique(np.concatenate([y_train, y_test]))))]
+
+    return {
+        "train_accuracy": accuracy_score(y_train, y_train_pred),
+        "test_accuracy": accuracy_score(y_test, y_test_pred),
+        "classification_report_train": classification_report(y_train, y_train_pred, target_names=target_names),
+        "classification_report_test": classification_report(y_test, y_test_pred, target_names=target_names),
+        "confusion_matrix_test": confusion_matrix(y_test, y_test_pred),
         "model": clf,
         "scaler": scaler,
     }

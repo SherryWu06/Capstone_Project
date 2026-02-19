@@ -14,6 +14,5 @@ scikit-learn>=1.3.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
-# Optional: deep learning (uncomment when needed)
-# torch>=2.0.0
-# xgboost>=2.0.0
+# Deep learning (for MIL)
+torch>=2.0.0
