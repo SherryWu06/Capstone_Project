@@ -49,6 +49,7 @@ from src.models.mil_classifier import (
     bags_from_regional,
     train_and_evaluate_mil,
     train_and_evaluate_mil_cv,
+    export_attention_maps,
 )
 
 
@@ -71,6 +72,36 @@ def run_phase2(
     print(f"  Regional samples: {X_flat.shape[0]} ({n_cells} cells x {n_weeks} weeks)")
     print(f"  Grid: {grid_shape[0]} x {grid_shape[1]} cells")
     return train_and_evaluate(X_flat, y_flat, class_names=class_names, n_splits=5)
+
+
+def save_predictions(
+    output_dir: Path,
+    species_per_sample: list[tuple[str, int]],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    suffix: str = "",
+) -> None:
+    """Save predictions to CSV for non-regional (RF) model."""
+    import csv
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"predictions{suffix}.csv"
+    path = output_dir / fname
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["species", "week_idx", "actual", "predicted", "actual_label", "predicted_label"])
+        for i, (species, week_idx) in enumerate(species_per_sample):
+            if i >= len(y_true):
+                break
+            act = int(y_true[i])
+            pred = int(y_pred[i])
+            w.writerow([
+                species, week_idx, act, pred,
+                class_names[act] if act < len(class_names) else str(act),
+                class_names[pred] if pred < len(class_names) else str(pred),
+            ])
+    print(f"  Saved predictions to {path}")
 
 
 def load_species_data(data_dir: Path, source: str, species: str, resolution: str, year: int):
@@ -119,6 +150,12 @@ def main():
         help="Fraction of species for test set when using --species-split (default: 0.2)",
     )
     parser.add_argument("--random-state", type=int, default=42, help="Random seed for species split (default: 42)")
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Optional: save attention maps (MIL) and/or predictions (RF) to this directory",
+    )
     args = parser.parse_args()
 
     use_binary = (not args.__dict__["4class"]) or args.binary
@@ -175,7 +212,7 @@ def main():
             print("  Warning: --species-split requires 2+ species. Using standard CV.")
 
     # Load train species
-    stacks_train, all_labels_train, bags_train, class_names = [], [], [], None
+    stacks_train, all_labels_train, bags_train, bag_metadata, species_per_sample_train, class_names = [], [], [], [], [], None
     for src, species, year in train_species:
         try:
             out = load_species_data(data_dir, src, species, args.resolution, year)
@@ -187,23 +224,27 @@ def main():
                 labels, class_names = build_week_labels(date_names, season_dates, year)
 
             if use_regional:
-                features = compute_local_features(stack, cell_size=args.cell_size)[0]
+                features, grid_shape = compute_local_features(stack, cell_size=args.cell_size)
                 n_weeks = stack.shape[0]
                 bags, bag_labels = bags_from_regional(features, labels)
                 bags_train.extend(bags)
                 all_labels_train.extend(bag_labels)
+                for t in range(n_weeks):
+                    bag_metadata.append((species, t, grid_shape))
             else:
                 features = compute_global_features(stack)
                 X = build_feature_matrix(features, stack.shape[0])
                 stacks_train.append(X)
                 all_labels_train.append(labels)
+                for t in range(stack.shape[0]):
+                    species_per_sample_train.append((species, t))
             print(f"  Loaded {species} ({src}): {stack.shape[0]} weeks [train]")
         except FileNotFoundError as e:
             print(f"  Skip {species}: {e}")
             continue
 
     # Load test species (if species split)
-    stacks_test, all_labels_test, bags_test = [], [], []
+    stacks_test, all_labels_test, bags_test, bag_metadata_test, species_per_sample_test = [], [], [], [], []
     for src, species, year in test_species:
         try:
             out = load_species_data(data_dir, src, species, args.resolution, year)
@@ -215,15 +256,19 @@ def main():
                 labels, _ = build_week_labels(date_names, season_dates, year)
 
             if use_regional:
-                features = compute_local_features(stack, cell_size=args.cell_size)[0]
+                features, grid_shape = compute_local_features(stack, cell_size=args.cell_size)
                 bags, bag_labels = bags_from_regional(features, labels)
                 bags_test.extend(bags)
                 all_labels_test.extend(bag_labels)
+                for t in range(stack.shape[0]):
+                    bag_metadata_test.append((species, t, grid_shape))
             else:
                 features = compute_global_features(stack)
                 X = build_feature_matrix(features, stack.shape[0])
                 stacks_test.append(X)
                 all_labels_test.append(labels)
+                for t in range(stack.shape[0]):
+                    species_per_sample_test.append((species, t))
             print(f"  Loaded {species} ({src}): {stack.shape[0]} weeks [test]")
         except FileNotFoundError as e:
             print(f"  Skip {species}: {e}")
@@ -278,6 +323,19 @@ def main():
             print("Confusion Matrix (test, rows=actual, cols=pred):")
             print("  ", class_names)
             print(results["confusion_matrix_test"])
+
+            if args.output_dir:
+                out = Path(args.output_dir)
+                export_attention_maps(
+                    results["model"], results["scaler"],
+                    bag_metadata, bags_train, y_train,
+                    class_names, out / "train",
+                )
+                export_attention_maps(
+                    results["model"], results["scaler"],
+                    bag_metadata_test, bags_test, y_test,
+                    class_names, out / "test",
+                )
         else:
             results = train_and_evaluate_mil_cv(
                 bags_train, y_train,
@@ -293,6 +351,13 @@ def main():
             print(f"Train Accuracy: {results['train_accuracy']:.3f}")
             print("\nClassification Report:")
             print(results["classification_report"])
+
+            if args.output_dir:
+                export_attention_maps(
+                    results["model"], results["scaler"],
+                    bag_metadata, bags_train, y_train,
+                    class_names, Path(args.output_dir),
+                )
     elif use_species_split_eval:
         print("Training Random Forest (species split: train on train species, eval on test species)...")
         results = train_and_evaluate_species_split(
@@ -310,6 +375,15 @@ def main():
         print("Confusion Matrix (test, rows=actual, cols=pred):")
         print("  ", class_names)
         print(results["confusion_matrix_test"])
+
+        if args.output_dir:
+            scaler = results["scaler"]
+            model = results["model"]
+            y_train_pred = model.predict(scaler.transform(X_train))
+            y_test_pred = model.predict(scaler.transform(X_test))
+            out = Path(args.output_dir)
+            save_predictions(out, species_per_sample_train, y_train, y_train_pred, class_names, "_train")
+            save_predictions(out, species_per_sample_test, y_test, y_test_pred, class_names, "_test")
     else:
         X, y = X_train, y_train
         mode = "binary" if use_binary else "4-class"
@@ -326,6 +400,18 @@ def main():
         print("Confusion Matrix (rows=actual, cols=pred):")
         print("  ", class_names)
         print(results["confusion_matrix"])
+
+        if args.output_dir:
+            scaler = results["scaler"]
+            model = results["model"]
+            y_pred = model.predict(scaler.transform(X))
+            save_predictions(
+                Path(args.output_dir),
+                species_per_sample_train,
+                y_train,
+                y_pred,
+                class_names,
+            )
 
 
 if __name__ == "__main__":

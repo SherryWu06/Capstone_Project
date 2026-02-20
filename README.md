@@ -70,11 +70,24 @@ Binary: migration = movement, breeding/nonbreeding = no movement.
 python scripts/run_baseline.py --4class
 ```
 
-**Phase 2 – Per-region prediction:**
+**Phase 2 – Regional (MIL, semi-supervised):**
 ```bash
 python scripts/run_baseline.py --regional
 ```
-Uses local features per grid cell for finer spatial granularity. Labels are global (weak supervision); infrastructure supports future per-location labels. Use `--cell-size 32` for finer grid (default: 64).
+Uses Attention-based Multiple Instance Learning: bag = week (all cells), bag label = week-level. Learns which cells contribute to the label. Use `--cell-size 32` for finer grid (default: 64).
+
+**Species-level train/test split:**
+```bash
+python scripts/run_baseline.py --matt --species-split
+```
+Trains on 80% of species, evaluates on held-out 20% to test generalization to unseen species.
+
+**Save outputs (optional):**
+```bash
+python scripts/run_baseline.py --matt --regional --output-dir outputs/
+```
+- **MIL:** Saves per-week attention maps and aggregate-by-season maps (`.npy`) per species
+- **RF:** Saves predictions CSV (species, week_idx, actual, predicted)
 
 ### Matt's data (data/raw/Matt/)
 

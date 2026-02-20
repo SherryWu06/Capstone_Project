@@ -6,6 +6,7 @@ Instances = cells; instance labels unknown. Model learns which cells contribute 
 Attention weights provide soft per-cell importance (discovered labels).
 """
 
+from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import TimeSeriesSplit
@@ -67,6 +68,30 @@ class MILDataset(Dataset):
 def collate_bags(batch):
     """Return list of (x, y) - variable bag sizes, no batching across bags."""
     return batch
+
+
+def get_attention_weights(
+    model: nn.Module,
+    scaler: StandardScaler,
+    bag: np.ndarray,
+    device: str = "cpu",
+) -> np.ndarray:
+    """
+    Run model on one bag, return attention weights (n_cells,).
+    """
+    bag_clean = np.nan_to_num(bag, nan=0.0, posinf=0.0, neginf=0.0)
+    bag_scaled = scaler.transform(bag_clean)
+    x = torch.from_numpy(bag_scaled.astype(np.float32)).to(device)
+    model.eval()
+    with torch.no_grad():
+        _, attn = model(x)
+    return attn.cpu().numpy()
+
+
+def attention_to_map(attention: np.ndarray, grid_shape: tuple[int, int]) -> np.ndarray:
+    """Reshape (n_cells,) attention to (n_rows, n_cols) map."""
+    n_rows, n_cols = grid_shape
+    return attention.reshape(n_rows, n_cols)
 
 
 def bags_from_regional(
@@ -240,3 +265,59 @@ def train_and_evaluate_mil_cv(
         "model": final["model"],
         "scaler": final["scaler"],
     }
+
+
+def export_attention_maps(
+    model: nn.Module,
+    scaler: StandardScaler,
+    bag_metadata: list[tuple[str, int, tuple[int, int]]],
+    bags: list[np.ndarray],
+    labels: np.ndarray,
+    class_names: list[str],
+    output_dir: Path,
+    device: str = "cpu",
+) -> None:
+    """
+    Export per-week attention maps and aggregate-by-season maps.
+    bag_metadata: list of (species, week_idx, grid_shape) per bag
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Group by species
+    species_data: dict[str, list[tuple[int, tuple[int, int], int]]] = {}
+    for i, (species, week_idx, grid_shape) in enumerate(bag_metadata):
+        if species not in species_data:
+            species_data[species] = []
+        species_data[species].append((i, grid_shape, labels[i]))
+
+    for species, items in species_data.items():
+        sp_dir = output_dir / species
+        sp_dir.mkdir(exist_ok=True)
+
+        attention_maps = []
+        week_indices = []
+        for bag_idx, grid_shape, label in items:
+            attn = get_attention_weights(model, scaler, bags[bag_idx], device)
+            attn_map = attention_to_map(attn, grid_shape)
+            attention_maps.append(attn_map)
+            week_indices.append(bag_idx)
+
+        # Save per-week maps as numpy
+        for j, (attn_map, (_, _, label)) in enumerate(zip(attention_maps, items)):
+            label_name = class_names[label] if label < len(class_names) else str(label)
+            np.save(sp_dir / f"attention_week{j:02d}_{label_name}.npy", attn_map)
+
+        # Save all weeks in one file
+        stack = np.array(attention_maps)
+        np.save(sp_dir / "attention_all_weeks.npy", stack)
+
+        # Aggregate by season (average attention for weeks with same label)
+        for class_idx, class_name in enumerate(class_names):
+            mask = np.array([item[2] == class_idx for item in items])
+            if not np.any(mask):
+                continue
+            agg = np.mean([attention_maps[i] for i in np.where(mask)[0]], axis=0)
+            np.save(sp_dir / f"attention_aggregate_{class_name}.npy", agg)
+
+    print(f"  Saved attention maps to {output_dir}")
