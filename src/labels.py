@@ -100,11 +100,11 @@ def build_binary_labels(
 def get_season_dates_from_json(
     labels_path: Path,
     species: str,
-    year: int = 2024,
+    year: int = None,
 ) -> tuple[list[dict], list[str]]:
     """
     Load season_dates and DATE_NAMES for a species from matt_species_seasons.json.
-    Normalizes season dates to the target year (e.g. 2024 for Matt's data).
+    Season dates are kept as-is (year from the JSON is used when year=None).
 
     Returns:
         season_dates: list of {"season", "start_date", "end_date"}
@@ -116,15 +116,17 @@ def get_season_dates_from_json(
     if not entry:
         raise KeyError(f"Species {species} not in {labels_path}")
 
+    # Use the year from the JSON unless explicitly overridden
+    source_year = entry.get("year", 2024) if year is None else year
+
     season_dates = []
     for s in entry["season_dates"]:
         start = s["start_date"]  # e.g. "2023-05-17"
         end = s["end_date"]
-        # Normalize to target year (Matt data may be 2024)
         start_parts = start.split("-")
         end_parts = end.split("-")
-        start_norm = f"{year}-{start_parts[1]}-{start_parts[2]}"
-        end_norm = f"{year}-{end_parts[1]}-{end_parts[2]}"
+        start_norm = f"{source_year}-{start_parts[1]}-{start_parts[2]}"
+        end_norm = f"{source_year}-{end_parts[1]}-{end_parts[2]}"
         season_dates.append({"season": s["season"], "start_date": start_norm, "end_date": end_norm})
 
     return season_dates, entry["DATE_NAMES"]

@@ -113,7 +113,7 @@ def load_matt_stack(
     species: str,
     product: str = "abundance_median",
     resolution: str = "27km",
-    year: int = 2024,
+    year: int = None,
 ) -> tuple[np.ndarray, dict]:
     """
     Load weekly abundance from Matt's flat layout (data/raw/Matt/).
@@ -123,7 +123,7 @@ def load_matt_stack(
         species: species code (acafly, etc.)
         product: abundance_median (prefer), or occurrence_median if available
         resolution: 3km, 9km, or 27km
-        year: 2024 for Matt's data
+        year: optional year filter; if None, uses the most recent available file
 
     Returns:
         data: (n_weeks, height, width)
@@ -133,10 +133,23 @@ def load_matt_stack(
     if not matt_dir.exists():
         raise FileNotFoundError(f"Matt data directory not found: {matt_dir}")
 
-    pattern = f"{species}_{product}_{resolution}_{year}.tif"
-    tif_path = matt_dir / pattern
-    if not tif_path.exists():
-        raise FileNotFoundError(f"Raster not found: {tif_path}")
+    if year is not None:
+        matches = sorted(matt_dir.glob(f"{species}_{product}_{resolution}_{year}.tif"))
+    else:
+        matches = sorted(matt_dir.glob(f"{species}_{product}_{resolution}_*.tif"))
+
+    if not matches:
+        raise FileNotFoundError(
+            f"No raster found for {species} ({product}, {resolution}) in {matt_dir}"
+        )
+    if len(matches) > 1:
+        import warnings
+        warnings.warn(
+            f"Multiple files found for {species} ({product}, {resolution}): "
+            f"{[m.name for m in matches]}. Using most recent: {matches[-1].name}",
+            stacklevel=2,
+        )
+    tif_path = matches[-1]
 
     with rasterio.open(tif_path) as src:
         data = src.read()  # (n_bands, height, width)
@@ -154,18 +167,20 @@ def load_matt_stack(
     return data, meta
 
 
-def list_matt_species(data_dir: Path, product: str = "abundance_median", year: int = 2024) -> list[str]:
+def list_matt_species(data_dir: Path, product: str = "abundance_median", year: int = None) -> list[str]:
     """
     Discover species with TIF files in data/raw/Matt/.
     Returns species codes that have abundance_median files.
+    If year is given, only returns species with that year. Otherwise returns all.
     """
     matt_dir = data_dir / "Matt"
     if not matt_dir.exists():
         return []
     species = set()
-    for f in matt_dir.glob("*.tif"):
+    glob_pattern = f"*_{product}_*_{year}.tif" if year else f"*_{product}_*.tif"
+    for f in matt_dir.glob(glob_pattern):
         # Pattern: {species}_{product}_{resolution}_{year}.tif
         parts = f.stem.split("_")
-        if len(parts) >= 4 and product in f.stem and str(year) in f.stem:
+        if len(parts) >= 4:
             species.add(parts[0])
     return sorted(species)

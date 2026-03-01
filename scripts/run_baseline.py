@@ -104,7 +104,7 @@ def save_predictions(
     print(f"  Saved predictions to {path}")
 
 
-def load_species_data(data_dir: Path, source: str, species: str, resolution: str, year: int):
+def load_species_data(data_dir: Path, source: str, species: str, resolution: str, year):
     """Load stack and labels for one species. Returns (stack, meta, labels, class_names) or None."""
     if source == "ebirdst":
         stack, meta = load_weekly_stack(data_dir, species=species, resolution=resolution, year=year)
@@ -119,7 +119,8 @@ def load_species_data(data_dir: Path, source: str, species: str, resolution: str
             raise FileNotFoundError(
                 f"Run 'Rscript scripts/export_season_dates.R' to create {labels_path}"
             )
-        season_dates, date_names = get_season_dates_from_json(labels_path, species, year=year)
+        # Pass year=None to use whatever year is in the JSON for this species
+        season_dates, date_names = get_season_dates_from_json(labels_path, species, year=None)
     return stack, meta, season_dates, date_names
 
 
@@ -138,6 +139,7 @@ def main():
     parser.add_argument("--matt", action="store_true", help="Shortcut for --source matt")
     parser.add_argument("--species", type=str, help="Species code (e.g. acafly for Matt)")
     parser.add_argument("--resolution", type=str, default="27km", help="Resolution (default: 27km)")
+    parser.add_argument("--year", type=int, default=None, help="Data year (default: 2024 for matt, 2023 for ebirdst)")
     parser.add_argument(
         "--species-split",
         action="store_true",
@@ -162,6 +164,8 @@ def main():
     use_regional = args.regional
     source = "matt" if args.matt else args.source
     data_dir = project_root / "data" / "raw"
+    # year=None for matt means load_matt_stack will pick the most recent available file
+    year = args.year  # None unless explicitly provided
 
     # Determine species to load
     use_species_split = args.species_split
@@ -171,29 +175,27 @@ def main():
         with open(labels_path) as f:
             json_species = set(json.load(f).keys())
 
+    ebirdst_year = year if year is not None else 2023
     if source == "all":
-        all_species = []
-        for src, sp, yr in [("ebirdst", "yebsap-example", 2023)]:
-            all_species.append((src, sp, yr))
-        matt_species = list_matt_species(data_dir, year=2024)
+        all_species = [("ebirdst", "yebsap-example", ebirdst_year)]
+        matt_species = list_matt_species(data_dir)
         for sp in matt_species:
             if sp in json_species:
-                all_species.append(("matt", sp, 2024))
+                all_species.append(("matt", sp, None))
     elif source == "matt":
         if args.species:
-            all_species = [("matt", args.species, 2024)]
+            all_species = [("matt", args.species, year)]
         elif use_species_split:
-            # Use all Matt species for species-level split
-            matt_species = list_matt_species(data_dir, year=2024)
+            matt_species = list_matt_species(data_dir)
             all_species = [
-                ("matt", sp, 2024) for sp in matt_species if sp in json_species
+                ("matt", sp, None) for sp in matt_species if sp in json_species
             ]
         else:
-            matt_species = list_matt_species(data_dir, year=2024)
+            matt_species = list_matt_species(data_dir)
             sp = matt_species[0] if matt_species else "acafly"
-            all_species = [("matt", sp, 2024)]
+            all_species = [("matt", sp, None)]
     else:
-        all_species = [("ebirdst", "yebsap-example", 2023)]
+        all_species = [("ebirdst", "yebsap-example", ebirdst_year)]
 
     # Species-level train/test split (requires 2+ species)
     if use_species_split and len(all_species) >= 2:
