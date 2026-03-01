@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--4class", action="store_true", help="Use 4-class labels (default: binary)")
     parser.add_argument("--regional", action="store_true", help="Phase 2: per-region with local features")
     parser.add_argument("--binary", action="store_true", help="Use binary labels (with --regional)")
-    parser.add_argument("--cell-size", type=int, default=64, help="Cell size for regional (default: 64)")
+    parser.add_argument("--cell-size", type=int, default=16, help="Cell size for regional (default: 16)")
     parser.add_argument(
         "--source",
         choices=["ebirdst", "matt", "all"],

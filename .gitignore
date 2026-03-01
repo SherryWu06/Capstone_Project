@@ -5,6 +5,9 @@ data/processed/
 # Generated outputs (attention maps, predictions)
 outputs/
 
+# Scratch / test files (not for sharing)
+scratch/
+
 # Config with secrets (edits are local only)
 config.R
 
