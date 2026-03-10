@@ -220,10 +220,11 @@ def main():
             out = load_species_data(data_dir, src, species, args.resolution, year)
             stack, meta, season_dates, date_names = out
             stack = stack.astype(np.float32)
+            label_year = year or int(season_dates[0]["start_date"][:4])
             if use_binary:
-                labels, class_names = build_binary_labels(date_names, season_dates, year)
+                labels, class_names = build_binary_labels(date_names, season_dates, label_year)
             else:
-                labels, class_names = build_week_labels(date_names, season_dates, year)
+                labels, class_names = build_week_labels(date_names, season_dates, label_year)
 
             if use_regional:
                 features, grid_shape = compute_local_features(stack, cell_size=args.cell_size)
@@ -252,10 +253,11 @@ def main():
             out = load_species_data(data_dir, src, species, args.resolution, year)
             stack, meta, season_dates, date_names = out
             stack = stack.astype(np.float32)
+            label_year = year or int(season_dates[0]["start_date"][:4])
             if use_binary:
-                labels, _ = build_binary_labels(date_names, season_dates, year)
+                labels, _ = build_binary_labels(date_names, season_dates, label_year)
             else:
-                labels, _ = build_week_labels(date_names, season_dates, year)
+                labels, _ = build_week_labels(date_names, season_dates, label_year)
 
             if use_regional:
                 features, grid_shape = compute_local_features(stack, cell_size=args.cell_size)
