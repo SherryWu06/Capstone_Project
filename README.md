@@ -89,6 +89,16 @@ python scripts/run_baseline.py --matt --regional --output-dir outputs/
 - **MIL:** Saves per-week attention maps and aggregate-by-season maps (`.npy`) per species
 - **RF:** Saves predictions CSV (species, week_idx, actual, predicted)
 
+### Plot attention maps
+
+After running the MIL baseline with `--output-dir`, generate presentation maps:
+
+```bash
+python scripts/plot_attention_maps.py --attention-dir outputs/mil_inspect/test --species acafly comyel --basemap --region north_america
+```
+
+Use `--attention-dir outputs/mil_inspect/train` for train species. Add `--weekly` for per-week maps.
+
 ### Matt's data (data/raw/Matt/)
 
 For TIF files from Matt (flat layout, no config.json):
