@@ -33,6 +33,7 @@ from src.raster_processing import (
     load_weekly_stack,
     load_matt_stack,
     list_matt_species,
+    list_ebirdst_species,
     find_species_data,
     get_season_dates,
     load_config,
@@ -137,6 +138,11 @@ def main():
         help="Data source (default: ebirdst)",
     )
     parser.add_argument("--matt", action="store_true", help="Shortcut for --source matt")
+    parser.add_argument(
+        "--ebirdst-all",
+        action="store_true",
+        help="Use all ebirdst species in data/raw/{year}/ (default: only yebsap-example)",
+    )
     parser.add_argument("--species", type=str, help="Species code (e.g. acafly for Matt)")
     parser.add_argument("--resolution", type=str, default="27km", help="Resolution (default: 27km)")
     parser.add_argument("--year", type=int, default=None, help="Data year (default: 2024 for matt, 2023 for ebirdst)")
@@ -194,6 +200,13 @@ def main():
             matt_species = list_matt_species(data_dir)
             sp = matt_species[0] if matt_species else "acafly"
             all_species = [("matt", sp, None)]
+    elif source == "ebirdst" and args.ebirdst_all:
+        ebirdst_species = list_ebirdst_species(
+            data_dir, resolution=args.resolution, year=ebirdst_year
+        )
+        all_species = [("ebirdst", sp, ebirdst_year) for sp in ebirdst_species]
+        if all_species:
+            print(f"  Found {len(all_species)} ebirdst species in data/raw/{ebirdst_year}/")
     else:
         all_species = [("ebirdst", "yebsap-example", ebirdst_year)]
 

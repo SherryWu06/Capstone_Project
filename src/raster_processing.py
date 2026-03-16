@@ -167,6 +167,32 @@ def load_matt_stack(
     return data, meta
 
 
+def list_ebirdst_species(
+    data_dir: Path,
+    product: str = "abundance_median",
+    resolution: str = "27km",
+    year: int = 2023,
+) -> list[str]:
+    """
+    Discover species with weekly TIF files in data/raw/{year}/{species}/.
+    Returns species codes that have abundance_median weekly rasters.
+    """
+    year_dir = data_dir / str(year)
+    if not year_dir.exists():
+        return []
+    species_list = []
+    for species_dir in sorted(year_dir.iterdir()):
+        if not species_dir.is_dir():
+            continue
+        weekly_dir = species_dir / "weekly"
+        if not weekly_dir.exists():
+            weekly_dir = species_dir
+        tif_path = weekly_dir / f"{species_dir.name}_{product}_{resolution}_{year}.tif"
+        if tif_path.exists():
+            species_list.append(species_dir.name)
+    return species_list
+
+
 def list_matt_species(data_dir: Path, product: str = "abundance_median", year: int = None) -> list[str]:
     """
     Discover species with TIF files in data/raw/Matt/.
