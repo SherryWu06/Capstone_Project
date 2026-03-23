@@ -1,0 +1,38 @@
+Working directory: /home/drkalex/capstone/Capstone_Project
+START baseline 2026-03-22T20:13:49-04:00
+  Limiting to 3 species (--max-species)
+  Found 3 ebirdst species in data/raw/2023/
+  Loaded amebit (ebirdst): 52 weeks [train]
+  Loaded amerob (ebirdst): 52 weeks [train]
+  Loaded baispa (ebirdst): 52 weeks [train]
+  Train: 156 bags (weeks), y (156,)
+  Labels: ['no_movement', 'movement']
+    no_movement: 94 samples (train)
+    movement: 62 samples (train)
+Training Attention MIL (semi-supervised: bag=week, instances=cells)...
+
+==================================================
+RESULTS (MIL, time-series CV)
+==================================================
+CV Accuracy: 0.700 (+/- 0.174)
+Train Accuracy: 0.814
+
+Classification Report:
+              precision    recall  f1-score   support
+
+ no_movement       1.00      0.69      0.82        94
+    movement       0.68      1.00      0.81        62
+
+    accuracy                           0.81       156
+   macro avg       0.84      0.85      0.81       156
+weighted avg       0.87      0.81      0.81       156
+
+  Saved attention maps to outputs
+END baseline 2026-03-23T00:18:38-04:00
+START plotting 2026-03-23T00:18:38-04:00
+Creating presentation maps...
+  Saved outputs/presentation/amebit_attention_maps.png
+  Saved outputs/presentation/amerob_attention_maps.png
+  Saved outputs/presentation/baispa_attention_maps.png
+Done. Maps saved to outputs/presentation
+END plotting 2026-03-23T00:26:06-04:00

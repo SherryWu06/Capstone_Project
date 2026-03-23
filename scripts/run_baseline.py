@@ -143,6 +143,12 @@ def main():
         action="store_true",
         help="Use all ebirdst species in data/raw/{year}/ (default: only yebsap-example)",
     )
+    parser.add_argument(
+        "--max-species",
+        type=int,
+        default=None,
+        help="Limit number of species (for testing; use with --ebirdst-all)",
+    )
     parser.add_argument("--species", type=str, help="Species code (e.g. acafly for Matt)")
     parser.add_argument("--resolution", type=str, default="27km", help="Resolution (default: 27km)")
     parser.add_argument("--year", type=int, default=None, help="Data year (default: 2024 for matt, 2023 for ebirdst)")
@@ -204,6 +210,9 @@ def main():
         ebirdst_species = list_ebirdst_species(
             data_dir, resolution=args.resolution, year=ebirdst_year
         )
+        if args.max_species is not None:
+            ebirdst_species = ebirdst_species[: args.max_species]
+            print(f"  Limiting to {len(ebirdst_species)} species (--max-species)")
         all_species = [("ebirdst", sp, ebirdst_year) for sp in ebirdst_species]
         if all_species:
             print(f"  Found {len(all_species)} ebirdst species in data/raw/{ebirdst_year}/")

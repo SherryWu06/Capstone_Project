@@ -45,3 +45,6 @@ Thumbs.db
 
 # SLURM
 *.sh
+slurm/*.out
+slurm/*.err
+slurm/*.log

@@ -21,6 +21,15 @@ def date_in_season(d: datetime, start: datetime, end: datetime) -> bool:
     return d >= start or d <= end
 
 
+def _filter_valid_seasons(season_dates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter out seasons with null start_date or end_date (e.g. incomplete eBird data)."""
+    return [
+        s
+        for s in season_dates
+        if s.get("start_date") is not None and s.get("end_date") is not None
+    ]
+
+
 def build_week_labels(
     date_names: list[str],
     season_dates: list[dict[str, Any]],
@@ -38,6 +47,12 @@ def build_week_labels(
         labels: int array (0..n_classes-1), one per week
         class_names: list of season names in order
     """
+    season_dates = _filter_valid_seasons(season_dates)
+    if not season_dates:
+        raise ValueError(
+            "No seasons with valid start_date/end_date. "
+            "Species may have incomplete eBird Status & Trends data."
+        )
     class_names = [s["season"] for s in season_dates]
     n_weeks = len(date_names)
     labels = np.full(n_weeks, -1, dtype=int)
@@ -85,6 +100,12 @@ def build_binary_labels(
         labels: 0 or 1 per week
         class_names: ["no_movement", "movement"]
     """
+    season_dates = _filter_valid_seasons(season_dates)
+    if not season_dates:
+        raise ValueError(
+            "No seasons with valid start_date/end_date. "
+            "Species may have incomplete eBird Status & Trends data."
+        )
     labels_4, _ = build_week_labels(date_names, season_dates, year)
     class_names = ["no_movement", "movement"]
 

@@ -39,7 +39,51 @@ except ImportError:
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.raster_processing import load_matt_stack
+from src.raster_processing import (
+    load_matt_stack,
+    load_weekly_stack,
+    find_species_data,
+    load_config,
+)
+
+
+def load_abundance_stack(
+    data_dir: Path,
+    species: str,
+    resolution: str = "27km",
+    year: int | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Matt flat layout first; then ebirdst data/raw/{year}/{species}/."""
+    try:
+        return load_matt_stack(data_dir, species, resolution=resolution, year=year)
+    except FileNotFoundError:
+        y = year if year is not None else 2023
+        return load_weekly_stack(data_dir, species, resolution=resolution, year=y)
+
+
+def get_date_names_for_species(
+    data_dir: Path,
+    species: str,
+    labels_path: Path,
+    year: int | None = None,
+) -> list[str]:
+    """Matt JSON DATE_NAMES, or ebirdst species config.json."""
+    if labels_path.exists():
+        try:
+            with open(labels_path) as f:
+                data = json.load(f)
+            dn = data.get(species, {}).get("DATE_NAMES", [])
+            if dn:
+                return dn
+        except Exception:
+            pass
+    try:
+        y = year if year is not None else 2023
+        species_dir = find_species_data(data_dir, species, y)
+        cfg = load_config(species_dir)
+        return cfg.get("DATE_NAMES", [])
+    except Exception:
+        return []
 
 # Region bounds (lon_min, lon_max, lat_min, lat_max) in WGS84
 REGION_BOUNDS = {
@@ -104,11 +148,11 @@ def plot_attention_maps(
     Create georeferenced attention maps for one species.
     Overlays attention on mean abundance when overlay_abundance=True.
     """
-    # Load raster (stack + metadata)
+    # Load raster (stack + metadata): Matt or ebirdst
     try:
-        stack, meta = load_matt_stack(data_dir, species, resolution=resolution, year=year)
+        stack, meta = load_abundance_stack(data_dir, species, resolution=resolution, year=year)
     except FileNotFoundError:
-        print(f"  Skip {species}: raster not found")
+        print(f"  Skip {species}: raster not found (Matt or ebirdst)")
         return
 
     transform = meta["transform"]
@@ -250,9 +294,9 @@ def plot_weekly_attention_maps(
     Create one map per week for a species. Saves to output_dir/weekly/{species}/.
     """
     try:
-        stack, meta = load_matt_stack(data_dir, species, resolution=resolution, year=year)
+        stack, meta = load_abundance_stack(data_dir, species, resolution=resolution, year=year)
     except FileNotFoundError:
-        print(f"  Skip {species}: raster not found")
+        print(f"  Skip {species}: raster not found (Matt or ebirdst)")
         return
 
     transform = meta["transform"]
@@ -280,12 +324,9 @@ def plot_weekly_attention_maps(
             print(f"  Skip {species}: no matching weeks in {weeks}")
             return
 
-    # Load DATE_NAMES for week labels
-    try:
-        with open(labels_path) as f:
-            data = json.load(f)
-        date_names = data.get(species, {}).get("DATE_NAMES", [])
-    except Exception:
+    # Load DATE_NAMES for week labels (Matt JSON or ebirdst config)
+    date_names = get_date_names_for_species(data_dir, species, labels_path, year=year)
+    if not date_names:
         date_names = [f"W{i:02d}" for i in range(len(week_files))]
 
     bounds = array_bounds(h, w, transform)
