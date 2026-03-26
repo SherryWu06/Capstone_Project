@@ -76,6 +76,12 @@ python scripts/run_baseline.py --regional
 ```
 Uses Attention-based Multiple Instance Learning: bag = week (all cells), bag label = week-level. Learns which cells contribute to the label. Use `--cell-size 32` for finer grid (default: 64).
 
+**Multiple ebirdst species (explicit codes — preferred):**
+```bash
+python scripts/run_baseline.py --ebirdst-species boboli dickci savspa --regional --resolution 3km --output-dir outputs/
+```
+Use exact species codes; data must exist under `data/raw/2023/<code>/` for the chosen resolution. For quick tests only, `--ebirdst-all` with `--max-species` / `--species-offset` still selects the first *N* sorted species.
+
 **Species-level train/test split:**
 ```bash
 python scripts/run_baseline.py --matt --species-split

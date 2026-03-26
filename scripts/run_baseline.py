@@ -16,6 +16,7 @@ Usage:
   python scripts/run_baseline.py --matt       # Matt data (acafly or --species)
   python scripts/run_baseline.py --matt --species acafly
   python scripts/run_baseline.py --source all # Multi-species
+  python scripts/run_baseline.py --ebirdst-species boboli dickci savspa --regional --resolution 3km
 """
 
 import argparse
@@ -147,7 +148,20 @@ def main():
         "--max-species",
         type=int,
         default=None,
-        help="Limit number of species (for testing; use with --ebirdst-all)",
+        help="[Shortcut] With --ebirdst-all: first N sorted species (prefer --ebirdst-species)",
+    )
+    parser.add_argument(
+        "--species-offset",
+        type=int,
+        default=0,
+        help="[Shortcut] With --ebirdst-all: skip first N sorted species before --max-species",
+    )
+    parser.add_argument(
+        "--ebirdst-species",
+        nargs="+",
+        default=None,
+        metavar="CODE",
+        help="Exact ebirdst codes to train on (data for --resolution must exist). Preferred over --max-species.",
     )
     parser.add_argument("--species", type=str, help="Species code (e.g. acafly for Matt)")
     parser.add_argument("--resolution", type=str, default="27km", help="Resolution (default: 27km)")
@@ -206,10 +220,37 @@ def main():
             matt_species = list_matt_species(data_dir)
             sp = matt_species[0] if matt_species else "acafly"
             all_species = [("matt", sp, None)]
+    elif source == "ebirdst" and args.ebirdst_species:
+        available = set(
+            list_ebirdst_species(
+                data_dir, resolution=args.resolution, year=ebirdst_year
+            )
+        )
+        wanted = []
+        for code in args.ebirdst_species:
+            if code in available:
+                wanted.append(code)
+            else:
+                print(
+                    f"  Warning: no {args.resolution} weekly data for '{code}' "
+                    f"in data/raw/{ebirdst_year}/ — skipping"
+                )
+        if not wanted:
+            print(
+                "Error: --ebirdst-species: no valid species after filtering. "
+                "Check codes and resolution.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        all_species = [("ebirdst", sp, ebirdst_year) for sp in wanted]
+        print(f"  ebirdst species ({len(all_species)}): {wanted}")
     elif source == "ebirdst" and args.ebirdst_all:
         ebirdst_species = list_ebirdst_species(
             data_dir, resolution=args.resolution, year=ebirdst_year
         )
+        if args.species_offset:
+            ebirdst_species = ebirdst_species[args.species_offset :]
+            print(f"  Skipped first {args.species_offset} species (--species-offset)")
         if args.max_species is not None:
             ebirdst_species = ebirdst_species[: args.max_species]
             print(f"  Limiting to {len(ebirdst_species)} species (--max-species)")
