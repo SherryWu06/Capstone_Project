@@ -29,6 +29,32 @@ if (exists("USE_MATT_SPECIES_CSV") && USE_MATT_SPECIES_CSV) {
   }
 }
 
+# Optional CLI overrides (after config + Matt CSV):
+#   Rscript scripts/download_data.R --resolution 9km
+#   Rscript scripts/download_data.R --resolution 9km --species dickci swahaw yerwar
+args_trail <- commandArgs(trailingOnly = TRUE)
+i <- 1L
+while (i <= length(args_trail)) {
+  if (identical(args_trail[i], "--resolution") && i < length(args_trail)) {
+    RESOLUTION <- args_trail[i + 1L]
+    message("CLI override: RESOLUTION = ", RESOLUTION)
+    i <- i + 2L
+  } else if (identical(args_trail[i], "--species") && i < length(args_trail)) {
+    i <- i + 1L
+    sp <- character(0)
+    while (i <= length(args_trail) && !grepl("^--", args_trail[i])) {
+      sp <- c(sp, args_trail[i])
+      i <- i + 1L
+    }
+    if (length(sp) > 0) {
+      SPECIES_CODES <- sp
+      message("CLI override: ", length(SPECIES_CODES), " species: ", paste(SPECIES_CODES, collapse = ", "))
+    }
+  } else {
+    i <- i + 1L
+  }
+}
+
 # Validate access key (not required for yebsap-example)
 needs_key <- !all(SPECIES_CODES %in% c("yebsap-example"))
 if (needs_key && (is.null(ACCESS_KEY) || ACCESS_KEY == "" || ACCESS_KEY == "your_key_here")) {

@@ -23,6 +23,19 @@ From the project root:
 Rscript scripts/download_data.R
 ```
 
+**Resolution / species without editing `config.R`:**
+
+```bash
+# 9 km for specific codes (adds *_9km_*.tif next to existing 3 km in each species folder)
+Rscript scripts/download_data.R --resolution 9km --species dickci swahaw yerwar
+```
+
+Or use the helper (edit `SPECIES` inside to match your `run.sh`):
+
+```bash
+bash scripts/download_ebirdst_9km.sh
+```
+
 Or from R:
 
 ```r
