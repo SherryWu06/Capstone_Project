@@ -44,6 +44,7 @@ from src.raster_processing import (
     load_weekly_stack,
     find_species_data,
     load_config,
+    list_ebirdst_species,
 )
 
 
@@ -358,6 +359,18 @@ def plot_weekly_attention_maps(
         p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
         ab_norm = np.clip(ab_norm / p95, 0, 1)
 
+    # Pre-compute per-class global vmax so all weeks of the same label share a scale.
+    # This makes color intensity comparable across weeks (e.g. strong vs weak migration signal).
+    class_vmax: dict[str, float] = {}
+    for week_path in week_files:
+        stem = week_path.stem
+        parts = stem.replace("attention_week", "").split("_")
+        lname = parts[1] if len(parts) > 1 else "unknown"
+        attn = np.load(week_path)
+        attn_up = np.kron(attn, np.ones((cell_size, cell_size)))[:h, :w]
+        p99 = float(np.percentile(attn_up, 99))
+        class_vmax[lname] = max(class_vmax.get(lname, 0.0), p99)
+
     for week_path in week_files:
         # Parse week index from filename: attention_week21_movement.npy -> 21
         stem = week_path.stem
@@ -371,6 +384,9 @@ def plot_weekly_attention_maps(
         attn = np.load(week_path)
         attn_upsampled = np.kron(attn, np.ones((cell_size, cell_size)))
         attn_upsampled = attn_upsampled[:h, :w]
+
+        # Use the shared vmax for this label class (falls back to per-map if missing)
+        vmax = class_vmax.get(label_name, float(np.percentile(attn_upsampled, 99)))
 
         subplot_kw = {"projection": proj} if (proj is not None) else {}
         fig, ax = plt.subplots(1, 1, figsize=(8, 6), subplot_kw=subplot_kw)
@@ -389,11 +405,11 @@ def plot_weekly_attention_maps(
             attn_upsampled,
             cmap="viridis",
             alpha=0.7,
-            norm=mcolors.Normalize(vmin=0, vmax=np.percentile(attn_upsampled, 99)),
+            norm=mcolors.Normalize(vmin=0, vmax=vmax),
             **imshow_kw,
         )
         ax.set_title(f"{display_name} – Week of {date_str} ({title_label})", fontsize=14)
-        plt.colorbar(im, ax=ax, label="Model importance", shrink=0.8)
+        plt.colorbar(im, ax=ax, label="Model importance (shared scale per label)", shrink=0.8)
         plt.tight_layout()
 
         out_path = weekly_dir / f"{species}_week{week_idx:02d}_{date_str.replace('-', '')}_{label_name}.png"
@@ -401,6 +417,126 @@ def plot_weekly_attention_maps(
         plt.close()
 
     print(f"  Saved {len(week_files)} weekly maps to {weekly_dir}")
+
+
+def plot_attention_difference_map(
+    output_dir: Path,
+    attention_dir: Path,
+    species: str,
+    data_dir: Path,
+    cell_size: int = 16,
+    resolution: str = "27km",
+    year: int = None,
+    overlay_abundance: bool = True,
+    use_basemap: bool = False,
+    region: str = "full",
+    movement_key: str = "movement",
+    no_movement_key: str = "no_movement",
+) -> None:
+    """
+    Plot signed attention difference (migration − non-migration) on a diverging colormap.
+
+    Red regions = model attends more during migration weeks.
+    Blue regions = model attends more during breeding/wintering weeks.
+    Requires attention_aggregate_{movement_key}.npy and attention_aggregate_{no_movement_key}.npy.
+    """
+    sp_dir = attention_dir / species
+    movement_path = sp_dir / f"attention_aggregate_{movement_key}.npy"
+    no_movement_path = sp_dir / f"attention_aggregate_{no_movement_key}.npy"
+
+    if not movement_path.exists() or not no_movement_path.exists():
+        print(
+            f"  Skip {species} difference map: missing aggregate file(s) "
+            f"({movement_path.name} or {no_movement_path.name})"
+        )
+        return
+
+    try:
+        stack, meta = load_abundance_stack(data_dir, species, resolution=resolution, year=year)
+    except FileNotFoundError:
+        print(f"  Skip {species} difference map: raster not found")
+        return
+
+    transform = meta["transform"]
+    crs = meta["crs"]
+    h, w = meta["height"], meta["width"]
+
+    stack_float = stack.astype(np.float64)
+    stack_float[~np.isfinite(stack_float)] = np.nan
+    mean_abundance = np.nanmean(stack_float, axis=0)
+
+    attn_movement = np.load(movement_path)
+    attn_no_movement = np.load(no_movement_path)
+
+    # Upsample both aggregate maps to raster resolution
+    attn_movement_up = np.kron(attn_movement, np.ones((cell_size, cell_size)))[:h, :w]
+    attn_no_movement_up = np.kron(attn_no_movement, np.ones((cell_size, cell_size)))[:h, :w]
+
+    # Signed difference: positive = model focuses here more during migration
+    diff = attn_movement_up - attn_no_movement_up
+    abs_max = np.percentile(np.abs(diff), 99)
+
+    bounds = array_bounds(h, w, transform)
+    extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+    plot_extent = get_extent_for_region(region, crs, extent)
+
+    proj = None
+    if use_basemap and CARTOPY_AVAILABLE:
+        try:
+            epsg = int(str(crs).replace("EPSG:", "")) if crs else 5070
+            proj = ccrs.epsg(epsg)
+        except Exception:
+            proj = ccrs.AlbersEqualArea(
+                central_longitude=-96, central_latitude=23,
+                standard_parallels=(29.5, 45.5),
+            )
+
+    imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
+    if proj is not None:
+        imshow_kw["transform"] = proj
+
+    subplot_kw = {"projection": proj} if proj is not None else {}
+    fig, ax = plt.subplots(1, 1, figsize=(9, 7), subplot_kw=subplot_kw)
+
+    if proj is not None:
+        ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
+        ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.3, edgecolor="gray")
+        try:
+            ax.set_extent(plot_extent, crs=proj)
+        except (ValueError, TypeError):
+            pass
+
+    if overlay_abundance:
+        ab_norm = np.nan_to_num(mean_abundance, nan=0)
+        p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
+        ab_norm = np.clip(ab_norm / p95, 0, 1)
+        ax.imshow(ab_norm, cmap="Greys", alpha=0.6, **imshow_kw)
+
+    im = ax.imshow(
+        diff,
+        cmap="RdBu_r",
+        alpha=0.8,
+        norm=mcolors.TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max),
+        **imshow_kw,
+    )
+
+    display_name = get_display_name(species)
+    ax.set_title(
+        f"{display_name} – Annual Attention Contrast\n"
+        "Red = migration focus  |  Blue = breeding/wintering focus",
+        fontsize=13,
+    )
+    ax.set_xlabel("Easting (m)" if proj is None else "Longitude")
+    ax.set_ylabel("Northing (m)" if proj is None else "Latitude")
+
+    cbar = plt.colorbar(im, ax=ax, label="Attention: Migration − Breeding & Wintering", shrink=0.8)
+    cbar.ax.axhline(y=0.5, color="black", linewidth=0.8, linestyle="--")
+
+    plt.tight_layout()
+    out_path = output_dir / f"{species}_attention_difference.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved {out_path}")
 
 
 def main():
@@ -422,7 +558,15 @@ def main():
         type=str,
         nargs="+",
         default=["acafly", "comyel", "casvir"],
-        help="Species to plot (default: acafly comyel casvir)",
+        help="Species to plot (default: acafly comyel casvir). Ignored if --ebirdst-all is set.",
+    )
+    parser.add_argument(
+        "--ebirdst-all",
+        action="store_true",
+        help=(
+            "Discover species from data/raw/{year}/ that have abundance_median weekly TIFs at "
+            "--resolution (same rule as run_baseline.py --ebirdst-all). Overrides --species."
+        ),
     )
     parser.add_argument("--cell-size", type=int, default=16, help="Cell size used in MIL (default: 16)")
     parser.add_argument("--resolution", type=str, default="27km")
@@ -457,6 +601,14 @@ def main():
         default="full",
         help="Zoom extent: full, north_america, or americas (default: full)",
     )
+    parser.add_argument(
+        "--diff",
+        action="store_true",
+        help=(
+            "Generate a signed attention-difference map per species "
+            "(migration − breeding/wintering) on a red/blue diverging colormap"
+        ),
+    )
     args = parser.parse_args()
 
     if args.basemap and not CARTOPY_AVAILABLE:
@@ -475,6 +627,20 @@ def main():
     labels_path = project_root / "data" / "labels" / "matt_species_seasons.json"
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.ebirdst_all:
+        plot_year = args.year if args.year is not None else 2023
+        args.species = list_ebirdst_species(
+            data_dir, resolution=args.resolution, year=plot_year
+        )
+        if not args.species:
+            print(
+                "Error: --ebirdst-all found no species with median rasters at "
+                f"{args.resolution} under {data_dir}/{plot_year}/.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"  --ebirdst-all: {len(args.species)} species at {args.resolution} ({plot_year})")
 
     print("Creating presentation maps...")
     for species in args.species:
@@ -505,6 +671,19 @@ def main():
                 use_basemap=args.basemap,
                 region=args.region,
                 weeks=args.weeks,
+            )
+        if args.diff:
+            plot_attention_difference_map(
+                output_dir=output_dir,
+                attention_dir=attention_dir,
+                species=species,
+                data_dir=data_dir,
+                cell_size=args.cell_size,
+                resolution=args.resolution,
+                year=args.year,
+                overlay_abundance=not args.no_overlay,
+                use_basemap=args.basemap,
+                region=args.region,
             )
 
     print(f"Done. Maps saved to {output_dir}")
