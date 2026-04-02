@@ -359,31 +359,22 @@ def plot_weekly_attention_maps(
         p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
         ab_norm = np.clip(ab_norm / p95, 0, 1)
 
-    # Pre-compute per-class global vmax so all weeks of the same label share a scale.
-    # This makes color intensity comparable across weeks (e.g. strong vs weak migration signal).
+    # Parse filenames and load+upsample arrays once; cache for the render loop.
+    ones_tile = np.ones((cell_size, cell_size))
+    parsed: list[tuple[int, str, np.ndarray]] = []
     class_vmax: dict[str, float] = {}
     for week_path in week_files:
-        stem = week_path.stem
-        parts = stem.replace("attention_week", "").split("_")
-        lname = parts[1] if len(parts) > 1 else "unknown"
-        attn = np.load(week_path)
-        attn_up = np.kron(attn, np.ones((cell_size, cell_size)))[:h, :w]
-        p99 = float(np.percentile(attn_up, 99))
-        class_vmax[lname] = max(class_vmax.get(lname, 0.0), p99)
-
-    for week_path in week_files:
-        # Parse week index from filename: attention_week21_movement.npy -> 21
-        stem = week_path.stem
-        parts = stem.replace("attention_week", "").split("_")
+        parts = week_path.stem.replace("attention_week", "").split("_")
         week_idx = int(parts[0]) if parts else 0
         label_name = parts[1] if len(parts) > 1 else "unknown"
+        attn_up = np.kron(np.load(week_path), ones_tile)[:h, :w]
+        p99 = float(np.percentile(attn_up, 99))
+        class_vmax[label_name] = max(class_vmax.get(label_name, 0.0), p99)
+        parsed.append((week_idx, label_name, attn_up))
 
+    for week_idx, label_name, attn_upsampled in parsed:
         date_str = date_names[week_idx] if week_idx < len(date_names) else f"Week {week_idx}"
         title_label = LABEL_MAP.get(label_name, label_name.replace("_", " ").title())
-
-        attn = np.load(week_path)
-        attn_upsampled = np.kron(attn, np.ones((cell_size, cell_size)))
-        attn_upsampled = attn_upsampled[:h, :w]
 
         # Use the shared vmax for this label class (falls back to per-map if missing)
         vmax = class_vmax.get(label_name, float(np.percentile(attn_upsampled, 99)))
@@ -416,7 +407,7 @@ def plot_weekly_attention_maps(
         plt.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close()
 
-    print(f"  Saved {len(week_files)} weekly maps to {weekly_dir}")
+    print(f"  Saved {len(parsed)} weekly maps to {weekly_dir}")
 
 
 def plot_attention_difference_map(
