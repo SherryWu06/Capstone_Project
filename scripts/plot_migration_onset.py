@@ -54,7 +54,7 @@ from src.raster_processing import load_matt_stack, load_weekly_stack
 REGION_BOUNDS = {
     "north_america": (-170, -50, 15, 72),
     "americas": (-170, -35, -55, 72),
-    "lower_48": (-125, -66, 24, 50),
+    "lower_48": (-130, -60, 18, 58),
 }
 
 DEFAULT_DATE_NAMES = [
