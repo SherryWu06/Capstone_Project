@@ -48,12 +48,13 @@ except ImportError:
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.raster_processing import load_matt_stack
+from src.raster_processing import load_matt_stack, load_weekly_stack
 
 # Region bounds (lon_min, lon_max, lat_min, lat_max) in WGS84
 REGION_BOUNDS = {
     "north_america": (-170, -50, 15, 72),
     "americas": (-170, -35, -55, 72),
+    "lower_48": (-125, -66, 24, 50),
 }
 
 DEFAULT_DATE_NAMES = [
@@ -66,20 +67,19 @@ DEFAULT_DATE_NAMES = [
 ]
 
 
-def get_extent_for_region(region: str, crs, full_extent: list) -> list:
+def get_extent_for_region(region: str, crs, full_extent: list) -> tuple:
+    """
+    Returns (plot_extent, use_geo) where:
+      - plot_extent is the extent to pass to ax.set_extent
+      - use_geo is True if the extent is in WGS84 (lon/lat) coordinates,
+        False if it is in the data's projected CRS coordinates.
+    Using WGS84 extents with ccrs.PlateCarree() avoids the slanted/skewed
+    view that occurs when projected bounds are passed directly.
+    """
     if region == "full" or region not in REGION_BOUNDS:
-        return full_extent
-    if not PYPROJ_AVAILABLE:
-        return full_extent
-    try:
-        lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS[region]
-        trans = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        west, south = trans.transform(lon_min, lat_min)
-        east, north = trans.transform(lon_max, lat_max)
-        w0, e0, s0, n0 = full_extent
-        return [max(west, w0), min(east, e0), max(south, s0), min(north, n0)]
-    except Exception:
-        return full_extent
+        return full_extent, False
+    lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS[region]
+    return [lon_min, lon_max, lat_min, lat_max], True
 
 
 def get_cartopy_proj(crs):
@@ -176,9 +176,9 @@ def plot_weekly_movement_maps(
     transform = meta["transform"]
     bounds = array_bounds(h, w, transform)
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    plot_extent = get_extent_for_region(region, crs, extent)
 
     proj = get_cartopy_proj(crs) if use_basemap else None
+    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
     weekly_dir = output_dir / "movement" / species
     weekly_dir.mkdir(parents=True, exist_ok=True)
 
@@ -213,7 +213,8 @@ def plot_weekly_movement_maps(
         if proj is not None:
             add_basemap_features(ax)
             try:
-                ax.set_extent(plot_extent, crs=proj)
+                extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
+                ax.set_extent(plot_extent, crs=extent_crs)
             except (ValueError, TypeError):
                 pass
 
@@ -247,22 +248,46 @@ def plot_onset_map(
     region: str = "full",
     cell_size: int = 16,
     season: str = "both",
+    display_weeks: int = 4,
 ) -> None:
     """
     Plot onset week per cell as a spatial map.
     Each cell is colored by the week number when it first showed movement.
+
+    Only cells with onset within the first `display_weeks` weeks of the
+    earliest detected onset are shown; later detections are masked out as
+    they tend to reflect residual movement rather than true migration onset.
     """
     h, w = meta["height"], meta["width"]
     crs = meta["crs"]
     transform = meta["transform"]
     bounds = array_bounds(h, w, transform)
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    plot_extent = get_extent_for_region(region, crs, extent)
 
     proj = get_cartopy_proj(crs) if use_basemap else None
+    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
+
+    valid_weeks = onset[np.isfinite(onset)]
+    if len(valid_weeks) == 0:
+        print(f"  No onset found for {species}, skipping onset map.")
+        return
+
+    week_min = int(valid_weeks.min())
+    # Cap display range to the first `display_weeks` weeks from the earliest onset
+    week_max_display = week_min + display_weeks - 1
+
+    # Mask cells whose onset falls outside the display window
+    onset_display = onset.copy()
+    onset_display[np.isfinite(onset_display) & (onset_display > week_max_display)] = np.nan
+
+    n_shown = int(np.sum(np.isfinite(onset_display)))
+    n_total = int(np.sum(np.isfinite(onset)))
+    print(f"  Displaying {n_shown}/{n_total} cells with onset in weeks {week_min}–{week_max_display} "
+          f"({date_names[week_min] if week_min < len(date_names) else week_min}–"
+          f"{date_names[min(week_max_display, len(date_names)-1)]})")
 
     # Upsample onset to raster resolution
-    onset_up = np.kron(onset, np.ones((cell_size, cell_size)))
+    onset_up = np.kron(onset_display, np.ones((cell_size, cell_size)))
     onset_up = onset_up[:h, :w]
     onset_up[onset_up == 0] = np.nan  # 0 means no onset found
 
@@ -274,13 +299,6 @@ def plot_onset_map(
     p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
     ab_norm = np.clip(ab_norm / p95, 0, 1)
 
-    valid_weeks = onset[np.isfinite(onset)]
-    if len(valid_weeks) == 0:
-        print(f"  No onset found for {species}, skipping onset map.")
-        return
-
-    week_min, week_max = int(valid_weeks.min()), int(valid_weeks.max())
-
     imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
     if proj is not None:
         imshow_kw["transform"] = proj
@@ -291,7 +309,8 @@ def plot_onset_map(
     if proj is not None:
         add_basemap_features(ax)
         try:
-            ax.set_extent(plot_extent, crs=proj)
+            extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
+            ax.set_extent(plot_extent, crs=extent_crs)
         except (ValueError, TypeError):
             pass
 
@@ -300,21 +319,23 @@ def plot_onset_map(
         onset_up,
         cmap="RdYlGn_r",  # red = early, green = late
         alpha=0.85,
-        norm=mcolors.Normalize(vmin=week_min, vmax=week_max),
+        norm=mcolors.Normalize(vmin=week_min, vmax=week_max_display),
         **imshow_kw,
     )
 
-    # Colorbar with date labels
+    # Colorbar with date labels across the display window
     cbar = plt.colorbar(im, ax=ax, label="Migration onset (week)", shrink=0.7)
-    tick_weeks = np.linspace(week_min, week_max, min(6, week_max - week_min + 1), dtype=int)
+    tick_weeks = np.linspace(week_min, week_max_display, display_weeks, dtype=int)
     cbar.set_ticks(tick_weeks)
     cbar.set_ticklabels([
-        date_names[w] if w < len(date_names) else f"W{w}" for w in tick_weeks
+        date_names[wk] if wk < len(date_names) else f"W{wk}" for wk in tick_weeks
     ])
 
+    date_end_label = date_names[min(week_max_display, len(date_names) - 1)]
     ax.set_title(
-        f"{species.upper()} – Migration onset date by region\n"
-        f"(Red = earliest, Green = latest; range {date_names[week_min]}–{date_names[min(week_max, len(date_names)-1)]})",
+        f"{species.upper()} – Migration onset date by region ({season})\n"
+        f"(Red = earliest, Green = latest; showing first {display_weeks} weeks: "
+        f"{date_names[week_min] if week_min < len(date_names) else week_min}–{date_end_label})",
         fontsize=13,
     )
     plt.tight_layout()
@@ -338,8 +359,8 @@ def main():
     parser.add_argument("--basemap", action="store_true", help="Add coastlines and borders")
     parser.add_argument(
         "--region",
-        choices=["full", "north_america", "americas"],
-        default="full",
+        choices=["full", "north_america", "americas", "lower_48"],
+        default="lower_48",
     )
     parser.add_argument(
         "--weekly",
@@ -378,6 +399,10 @@ def main():
         "--z-threshold", type=float, default=1.5,
         help="Z-score threshold for onset detection (default: 1.5)",
     )
+    parser.add_argument(
+        "--display-weeks", type=int, default=4,
+        help="Number of weeks to display on onset map, starting from the earliest detected onset (default: 4)",
+    )
     args = parser.parse_args()
 
     if not args.weekly and not args.onset:
@@ -400,7 +425,11 @@ def main():
     for species in args.species:
         print(f"\nProcessing {species}...")
         try:
-            stack, meta = load_matt_stack(data_dir, species, resolution=args.resolution, year=args.year)
+            # Try the 2023-layout first (data/raw/2023/<species>/weekly/), then Matt flat layout
+            try:
+                stack, meta = load_weekly_stack(data_dir, species, resolution=args.resolution, year=args.year or 2023)
+            except (FileNotFoundError, Exception):
+                stack, meta = load_matt_stack(data_dir, species, resolution=args.resolution, year=args.year)
         except FileNotFoundError as e:
             print(f"  Skip: {e}")
             continue
@@ -447,6 +476,7 @@ def main():
                 region=args.region,
                 cell_size=args.cell_size,
                 season="spring",
+                display_weeks=args.display_weeks,
             )
             # Rename to indicate spring
             src = output_dir / f"{species}_migration_onset.png"
@@ -472,6 +502,7 @@ def main():
                 region=args.region,
                 cell_size=args.cell_size,
                 season="fall",
+                display_weeks=args.display_weeks,
             )
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_fall_onset.png"
