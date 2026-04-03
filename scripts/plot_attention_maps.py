@@ -90,6 +90,8 @@ def get_date_names_for_species(
 REGION_BOUNDS = {
     "north_america": (-170, -50, 15, 72),
     "americas": (-170, -35, -55, 72),
+    # Lower 48 + buffer into southern Canada/Alaska panhandle and northern Mexico
+    "lower_48_wide": (-130, -60, 18, 58),
 }
 
 # Bird-friendly labels (technical -> presentation)
@@ -108,28 +110,19 @@ def get_display_name(species_code: str) -> str:
     return species_code.replace("_", " ").title()
 
 
-def get_extent_for_region(region: str, crs, full_extent: list) -> list:
+def get_extent_for_region(region: str, crs, full_extent: list) -> tuple:
     """
-    Return extent [west, east, south, north] for the given region.
-    full_extent: bounds from raster in raster CRS.
+    Returns (plot_extent, use_geo) where:
+      - plot_extent is the extent to pass to ax.set_extent
+      - use_geo is True if the extent is in WGS84 (lon/lat) coordinates,
+        False if it is in the data's projected CRS coordinates.
+    Using WGS84 extents with ccrs.PlateCarree() avoids the slanted/skewed
+    view that occurs when projected bounds are passed directly.
     """
     if region == "full" or region not in REGION_BOUNDS:
-        return full_extent
-    if not PYPROJ_AVAILABLE:
-        return full_extent
-    try:
-        lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS[region]
-        trans = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-        west, south = trans.transform(lon_min, lat_min)
-        east, north = trans.transform(lon_max, lat_max)
-        # Clip to raster bounds
-        w0, e0, s0, n0 = full_extent[0], full_extent[1], full_extent[2], full_extent[3]
-        return [
-            max(west, w0), min(east, e0),
-            max(south, s0), min(north, n0),
-        ]
-    except Exception:
-        return full_extent
+        return full_extent, False
+    lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS[region]
+    return [lon_min, lon_max, lat_min, lat_max], True
 
 
 def plot_attention_maps(
@@ -179,7 +172,6 @@ def plot_attention_maps(
     display_name = get_display_name(species)
     bounds = array_bounds(h, w, transform)
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    plot_extent = get_extent_for_region(region, crs, extent)
 
     # Projection for basemap (match raster CRS)
     proj = None
@@ -192,6 +184,8 @@ def plot_attention_maps(
                 central_longitude=-96, central_latitude=23,
                 standard_parallels=(29.5, 45.5),
             )
+
+    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
 
     n_maps = len(aggregate_files)
     subplot_kw = {"projection": proj} if (proj is not None) else {}
@@ -211,7 +205,8 @@ def plot_attention_maps(
             ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
             ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.3, edgecolor="gray")
             try:
-                ax.set_extent(plot_extent, crs=proj)
+                extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
+                ax.set_extent(plot_extent, crs=extent_crs)
             except (ValueError, TypeError):
                 pass  # fallback: imshow extent will define view
 
@@ -332,7 +327,6 @@ def plot_weekly_attention_maps(
 
     bounds = array_bounds(h, w, transform)
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    plot_extent = get_extent_for_region(region, crs, extent)
 
     proj = None
     if use_basemap and CARTOPY_AVAILABLE:
@@ -345,6 +339,7 @@ def plot_weekly_attention_maps(
                 standard_parallels=(29.5, 45.5),
             )
 
+    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
     weekly_dir = output_dir / "weekly" / species
     weekly_dir.mkdir(parents=True, exist_ok=True)
 
@@ -386,7 +381,8 @@ def plot_weekly_attention_maps(
             ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
             ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.3, edgecolor="gray")
             try:
-                ax.set_extent(plot_extent, crs=proj)
+                extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
+                ax.set_extent(plot_extent, crs=extent_crs)
             except (ValueError, TypeError):
                 pass
 
@@ -469,7 +465,6 @@ def plot_attention_difference_map(
 
     bounds = array_bounds(h, w, transform)
     extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
-    plot_extent = get_extent_for_region(region, crs, extent)
 
     proj = None
     if use_basemap and CARTOPY_AVAILABLE:
@@ -482,6 +477,8 @@ def plot_attention_difference_map(
                 standard_parallels=(29.5, 45.5),
             )
 
+    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
+
     imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
     if proj is not None:
         imshow_kw["transform"] = proj
@@ -493,7 +490,8 @@ def plot_attention_difference_map(
         ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
         ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.3, edgecolor="gray")
         try:
-            ax.set_extent(plot_extent, crs=proj)
+            extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
+            ax.set_extent(plot_extent, crs=extent_crs)
         except (ValueError, TypeError):
             pass
 
@@ -588,9 +586,9 @@ def main():
     parser.add_argument(
         "--region",
         type=str,
-        choices=["full", "north_america", "americas"],
-        default="full",
-        help="Zoom extent: full, north_america, or americas (default: full)",
+        choices=["full", "north_america", "americas", "lower_48_wide"],
+        default="lower_48_wide",
+        help="Zoom extent: full, north_america, americas, or lower_48_wide (default: lower_48_wide)",
     )
     parser.add_argument(
         "--diff",
@@ -607,9 +605,8 @@ def main():
         print("  Falling back to no basemap.")
         args.basemap = False
 
-    if args.region != "full" and not PYPROJ_AVAILABLE:
-        print("Warning: pyproj not installed. Run: pip install pyproj for --region zoom")
-        print("  Using full extent.")
+    if args.region != "full" and not CARTOPY_AVAILABLE:
+        print("Warning: cartopy not installed; --region zoom requires cartopy + --basemap.")
         args.region = "full"
 
     attention_dir = Path(args.attention_dir)
