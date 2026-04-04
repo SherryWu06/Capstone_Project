@@ -26,24 +26,28 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import matplotlib.cm as cm
 import rasterio
-from rasterio.transform import array_bounds
+from rasterio.transform import array_bounds, from_bounds
+from rasterio.warp import reproject, Resampling
+import geopandas as gpd
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-try:
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    CARTOPY_AVAILABLE = True
-except ImportError:
-    CARTOPY_AVAILABLE = False
+_BORDERS_CACHE: dict = {}
 
-try:
-    from pyproj import Transformer
-    PYPROJ_AVAILABLE = True
-except ImportError:
-    PYPROJ_AVAILABLE = False
+
+def _load_borders():
+    """Load and cache Natural Earth country + state boundaries (WGS84)."""
+    if "countries" not in _BORDERS_CACHE:
+        _BORDERS_CACHE["countries"] = gpd.read_file(
+            "https://naturalearth.s3.amazonaws.com/50m_cultural/"
+            "ne_50m_admin_0_countries.zip"
+        )
+        _BORDERS_CACHE["states"] = gpd.read_file(
+            "https://naturalearth.s3.amazonaws.com/50m_cultural/"
+            "ne_50m_admin_1_states_provinces.zip"
+        )
+    return _BORDERS_CACHE["countries"], _BORDERS_CACHE["states"]
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
@@ -55,6 +59,7 @@ REGION_BOUNDS = {
     "north_america": (-170, -50, 15, 72),
     "americas": (-170, -35, -55, 72),
     "lower_48": (-130, -60, 18, 58),
+    "lower_48_plus": (-172, -50, 14, 73),
 }
 
 DEFAULT_DATE_NAMES = [
@@ -92,10 +97,12 @@ def date_to_week_index(date_str: str, date_names: list = None) -> int | None:
         return None
 
 
-def get_species_search_windows(species_data: dict, date_names: list) -> dict | None:
+def get_species_search_windows(
+    species_data: dict, date_names: list, buffer_weeks: int = SEASON_BUFFER_WEEKS
+) -> dict | None:
     """
     Derive per-species onset search windows from eBird season dates,
-    with SEASON_BUFFER_WEEKS padding on each side to allow detection
+    with buffer_weeks padding on each side to allow detection
     of early-shifting migration.
 
     Returns dict with spring_start, spring_end, fall_start, fall_end
@@ -121,56 +128,57 @@ def get_species_search_windows(species_data: dict, date_names: list) -> dict | N
 
     n_weeks = len(date_names)
     return {
-        "spring_start": max(0, pre_start - SEASON_BUFFER_WEEKS),
-        "spring_end": min(n_weeks, pre_end + SEASON_BUFFER_WEEKS + 1),
-        "fall_start": max(0, post_start - SEASON_BUFFER_WEEKS),
-        "fall_end": min(n_weeks, post_end + SEASON_BUFFER_WEEKS + 1),
+        "spring_start": max(0, pre_start - buffer_weeks),
+        "spring_end": min(n_weeks, pre_end + buffer_weeks + 1),
+        "fall_start": max(0, post_start - buffer_weeks),
+        "fall_end": min(n_weeks, post_end + buffer_weeks + 1),
     }
 
 
-def get_extent_for_region(region: str, crs, full_extent: list) -> tuple:
+def reproject_to_lonlat(
+    array: np.ndarray,
+    src_crs,
+    src_transform,
+    lon_min: float, lon_max: float,
+    lat_min: float, lat_max: float,
+    dst_width: int = 1800,
+) -> tuple[np.ndarray, list]:
     """
-    Returns (plot_extent, use_geo) where:
-      - plot_extent is the extent to pass to ax.set_extent
-      - use_geo is True if the extent is in WGS84 (lon/lat) coordinates,
-        False if it is in the data's projected CRS coordinates.
-    Using WGS84 extents with ccrs.PlateCarree() avoids the slanted/skewed
-    view that occurs when projected bounds are passed directly.
+    Reproject a 2-D array from its native CRS to WGS84 lon/lat,
+    clipped to the given geographic bounding box.
+
+    Returns (reprojected_array, extent) where extent = [lon_min, lon_max, lat_min, lat_max].
     """
-    if region == "full" or region not in REGION_BOUNDS:
-        return full_extent, False
-    lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS[region]
-    return [lon_min, lon_max, lat_min, lat_max], True
+    dst_height = int(dst_width * (lat_max - lat_min) / (lon_max - lon_min))
+    dst_transform = from_bounds(lon_min, lat_min, lon_max, lat_max, dst_width, dst_height)
+    dst = np.full((dst_height, dst_width), np.nan, dtype=np.float32)
 
-
-def get_cartopy_proj(crs):
-    if not CARTOPY_AVAILABLE:
-        return None
-    try:
-        epsg = int(str(crs).replace("EPSG:", ""))
-        return ccrs.epsg(epsg)
-    except Exception:
-        return ccrs.AlbersEqualArea(
-            central_longitude=-96, central_latitude=23,
-            standard_parallels=(29.5, 45.5),
-        )
-
-
-def add_basemap_features(ax):
-    ax.add_feature(cfeature.LAND, facecolor="white", zorder=0)
-    ax.add_feature(cfeature.OCEAN, facecolor="white", zorder=0)
-    ax.add_feature(
-        cfeature.COASTLINE.with_scale("50m"),
-        linewidth=0.45, edgecolor="#555555", zorder=2,
+    reproject(
+        source=array.astype(np.float32),
+        destination=dst,
+        src_transform=src_transform,
+        src_crs=src_crs,
+        dst_transform=dst_transform,
+        dst_crs="EPSG:4326",
+        resampling=Resampling.nearest,
+        src_nodata=np.nan,
+        dst_nodata=np.nan,
     )
-    ax.add_feature(
-        cfeature.BORDERS.with_scale("50m"),
-        linewidth=0.35, edgecolor="#777777", zorder=2,
-    )
-    ax.add_feature(
-        cfeature.STATES.with_scale("50m"),
-        linewidth=0.20, edgecolor="#aaaaaa", zorder=2,
-    )
+
+    extent = [lon_min, lon_max, lat_min, lat_max]
+    return dst, extent
+
+
+def add_basemap(ax, lon_min, lon_max, lat_min, lat_max):
+    """Draw country borders and state/province boundaries from Natural Earth."""
+    countries, states = _load_borders()
+
+    countries.boundary.plot(ax=ax, linewidth=0.4, edgecolor="#555555", zorder=2)
+    states.boundary.plot(ax=ax, linewidth=0.2, edgecolor="#aaaaaa", zorder=2)
+
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_aspect("equal")
 
 
 def compute_weekly_change(stack: np.ndarray) -> np.ndarray:
@@ -253,33 +261,33 @@ def plot_weekly_movement_maps(
     weeks: list | None = None,
 ) -> None:
     """Save one PNG per week showing pixel-level movement magnitude."""
-    h, w = meta["height"], meta["width"]
-    crs = meta["crs"]
-    transform = meta["transform"]
-    bounds = array_bounds(h, w, transform)
-    extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+    src_crs = meta["crs"]
+    src_transform = meta["transform"]
 
-    proj = get_cartopy_proj(crs) if use_basemap else None
-    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
+    lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS.get(
+        region, (-180, 180, -60, 85)
+    )
+
     weekly_dir = output_dir / "movement" / species
     weekly_dir.mkdir(parents=True, exist_ok=True)
 
-    # Compute mean abundance for background
+    # Reproject mean abundance for background
     s = stack.astype(np.float64)
     s[~np.isfinite(s)] = np.nan
     mean_ab = np.nanmean(s, axis=0)
     ab_norm = np.nan_to_num(mean_ab, nan=0)
     p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
     ab_norm = np.clip(ab_norm / p95, 0, 1)
+    ab_ll, img_ext = reproject_to_lonlat(
+        ab_norm, src_crs, src_transform,
+        lon_min, lon_max, lat_min, lat_max,
+    )
 
     # Color scale: 99th percentile of all change values
-    all_chg = change[1:]  # skip week 0
+    all_chg = change[1:]
     vmax = float(np.nanpercentile(all_chg[all_chg > 0], 99)) if np.any(all_chg > 0) else 1.0
 
-    imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
-    if proj is not None:
-        imshow_kw["transform"] = proj
-
+    imshow_kw = {"extent": img_ext, "origin": "upper"}
     n_weeks = change.shape[0]
     week_iter = weeks if weeks is not None else range(1, n_weeks)
 
@@ -287,27 +295,24 @@ def plot_weekly_movement_maps(
         if t >= n_weeks:
             continue
         date_str = date_names[t] if t < len(date_names) else f"W{t:02d}"
-        chg_t = change[t].copy()
+        chg_ll, _ = reproject_to_lonlat(
+            change[t], src_crs, src_transform,
+            lon_min, lon_max, lat_min, lat_max,
+        )
 
-        subplot_kw = {"projection": proj} if proj is not None else {}
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6), subplot_kw=subplot_kw)
+        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
 
-        if proj is not None:
-            add_basemap_features(ax)
-            try:
-                extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
-                ax.set_extent(plot_extent, crs=extent_crs)
-            except (ValueError, TypeError):
-                pass
+        if use_basemap:
+            add_basemap(ax, lon_min, lon_max, lat_min, lat_max)
 
-        ax.imshow(ab_norm, cmap="Greys", alpha=0.6, **imshow_kw)
+        ax.imshow(ab_ll, cmap="Greys", alpha=0.6, **imshow_kw)
         im = ax.imshow(
-            chg_t,
-            cmap="hot_r",
-            alpha=0.8,
+            chg_ll, cmap="hot_r", alpha=0.8,
             norm=mcolors.Normalize(vmin=0, vmax=vmax),
             **imshow_kw,
         )
+        ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(lat_min, lat_max)
         ax.set_title(f"{species.upper()} – Movement week of {date_str}", fontsize=14)
         plt.colorbar(im, ax=ax, label="Abundance change (week-to-week)", shrink=0.8)
         plt.tight_layout()
@@ -357,13 +362,12 @@ def plot_onset_map(
     detected onset — useful for focusing on where migration begins.
     """
     h, w = meta["height"], meta["width"]
-    crs = meta["crs"]
-    transform = meta["transform"]
-    bounds = array_bounds(h, w, transform)
-    extent = [bounds[0], bounds[2], bounds[1], bounds[3]]
+    src_crs = meta["crs"]
+    src_transform = meta["transform"]
 
-    proj = get_cartopy_proj(crs) if use_basemap else None
-    plot_extent, extent_is_geo = get_extent_for_region(region, crs, extent)
+    lon_min, lon_max, lat_min, lat_max = REGION_BOUNDS.get(
+        region, (-180, 180, -60, 85)
+    )
 
     valid_weeks = onset[np.isfinite(onset)]
     if len(valid_weeks) == 0:
@@ -373,7 +377,6 @@ def plot_onset_map(
     week_min = int(valid_weeks.min())
     week_max = int(valid_weeks.max())
 
-    # Optional cap: focus on the first N weeks of onset
     onset_plot = onset
     if cap_weeks is not None:
         cap_limit = week_min + cap_weeks - 1
@@ -400,9 +403,9 @@ def plot_onset_map(
     # Upsample onset to raster resolution
     onset_up = np.kron(onset_plot, np.ones((cell_size, cell_size)))
     onset_up = onset_up[:h, :w]
-    onset_up[onset_up == 0] = np.nan  # 0 means no onset found
+    onset_up[onset_up == 0] = np.nan
 
-    # Background abundance (compute before crop so both layers match)
+    # Background abundance
     s = stack.astype(np.float64)
     s[~np.isfinite(s)] = np.nan
     mean_ab = np.nanmean(s, axis=0)
@@ -410,57 +413,51 @@ def plot_onset_map(
     p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
     ab_norm = np.clip(ab_norm / p95, 0, 1)
 
-    # Auto-crop to valid onset data so the map isn't mostly blank
-    valid_mask = np.isfinite(onset_up)
-    bbox = get_data_bbox(valid_mask, pad=12)
-    if bbox is not None:
-        r0, r1, c0, c1 = bbox
-        onset_up = onset_up[r0:r1, c0:c1]
-        ab_norm = ab_norm[r0:r1, c0:c1]
-        left, bottom, right, top = bounds[0], bounds[1], bounds[2], bounds[3]
-        xres = (right - left) / w
-        yres = (top - bottom) / h
-        extent = [left + c0 * xres, left + c1 * xres,
-                  top - r1 * yres, top - r0 * yres]
+    # ----- Reproject to lon/lat for plotting -----
+    onset_ll, img_ext = reproject_to_lonlat(
+        onset_up, src_crs, src_transform,
+        lon_min, lon_max, lat_min, lat_max,
+    )
+    ab_ll, _ = reproject_to_lonlat(
+        ab_norm, src_crs, src_transform,
+        lon_min, lon_max, lat_min, lat_max,
+    )
+    # NaN-ify zeros that came from nodata in the reprojected onset
+    onset_ll[onset_ll == 0] = np.nan
 
-    imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
-    if proj is not None:
-        imshow_kw["transform"] = proj
+    # ----- Plot in plain lon/lat -----
+    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
 
-    subplot_kw = {"projection": proj} if proj is not None else {}
-    fig, ax = plt.subplots(1, 1, figsize=(10, 7), subplot_kw=subplot_kw)
+    if use_basemap:
+        add_basemap(ax, lon_min, lon_max, lat_min, lat_max)
 
-    if proj is not None:
-        add_basemap_features(ax)
-        try:
-            extent_crs = ccrs.PlateCarree() if extent_is_geo else proj
-            ax.set_extent(plot_extent, crs=extent_crs)
-        except (ValueError, TypeError):
-            pass
+    imshow_kw = {"extent": img_ext, "origin": "upper"}
+    ax.imshow(ab_ll, cmap="Greys", alpha=0.18, **imshow_kw)
 
-    ax.imshow(ab_norm, cmap="Greys", alpha=0.18, **imshow_kw)
-
+    # Discrete colormap: turbo (blue=earliest → red=latest)
+    # Turbo has high perceptual contrast between adjacent steps, making each
+    # onset week visually distinct — unlike warm ramps where orange/yellow blend.
     weeks_shown = np.arange(week_min_display, week_max_display + 1)
-    anchor_colors = ["#c62828", "#e76f51", "#f4a261", "#e9c46a", "#90be6d", "#2e7d32"]
     n = len(weeks_shown)
-    if n <= len(anchor_colors):
-        colors = anchor_colors[:n]
-    else:
-        cmap_interp = mcolors.LinearSegmentedColormap.from_list("onset", anchor_colors, N=n)
-        colors = [mcolors.to_hex(cmap_interp(i / max(n - 1, 1))) for i in range(n)]
+    turbo = plt.get_cmap("turbo")
+    colors = [mcolors.to_hex(turbo(i / max(n - 1, 1))) for i in range(n)]
     cmap = mcolors.ListedColormap(colors)
     cmap.set_bad((1, 1, 1, 0))
     bounds_norm = np.arange(week_min_display - 0.5, week_max_display + 1.5, 1)
     norm = mcolors.BoundaryNorm(bounds_norm, cmap.N)
 
     im = ax.imshow(
-        onset_up,
+        onset_ll,
         cmap=cmap,
         norm=norm,
         alpha=0.95,
         interpolation="nearest",
         **imshow_kw,
     )
+
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_aspect("equal")
 
     # Colorbar with date labels (subsample ticks if many weeks)
     cbar = plt.colorbar(im, ax=ax, shrink=0.78, pad=0.02)
@@ -480,7 +477,7 @@ def plot_onset_map(
     date_end_label = date_names[min(week_max, len(date_names) - 1)]
     ax.set_title(
         f"{species.upper()} – Migration onset by region ({season})\n"
-        f"(Red = earliest, Green = latest; {date_start_label}–{date_end_label})",
+        f"(Blue = earliest, Red = latest; {date_start_label}–{date_end_label})",
         fontsize=13,
     )
     plt.tight_layout()
@@ -492,7 +489,6 @@ def plot_onset_map(
 
 
 def main():
-    global SEASON_BUFFER_WEEKS
     parser = argparse.ArgumentParser(description="Per-cell migration onset analysis")
     parser.add_argument("--species", nargs="+", default=["acafly", "comyel", "casvir"])
     parser.add_argument("--resolution", default="27km")
@@ -505,7 +501,7 @@ def main():
     parser.add_argument("--basemap", action="store_true", help="Add coastlines and borders")
     parser.add_argument(
         "--region",
-        choices=["full", "north_america", "americas", "lower_48"],
+        choices=["full", "north_america", "americas", "lower_48", "lower_48_plus"],
         default="lower_48",
     )
     parser.add_argument(
@@ -564,19 +560,10 @@ def main():
         parser.print_help()
         return
 
-    if args.basemap and not CARTOPY_AVAILABLE:
-        print("Warning: cartopy not installed. Run: pip install cartopy")
-        args.basemap = False
-    if args.region != "full" and not PYPROJ_AVAILABLE:
-        print("Warning: pyproj not installed. Run: pip install pyproj")
-        args.region = "full"
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     data_dir = project_root / "data" / "raw"
     labels_path = project_root / "data" / "labels" / "matt_species_seasons.json"
-
-    SEASON_BUFFER_WEEKS = args.season_buffer
 
     for species in args.species:
         print(f"\nProcessing {species}...")
@@ -618,7 +605,7 @@ def main():
         if args.onset:
             # Derive per-species search windows from eBird season dates + buffer,
             # falling back to fixed defaults if not available.
-            windows = get_species_search_windows(species_json, date_names)
+            windows = get_species_search_windows(species_json, date_names, buffer_weeks=args.season_buffer)
             cli_override = args.onset_spring_start is not None
 
             spring_start = args.onset_spring_start if args.onset_spring_start is not None else (windows["spring_start"] if windows else 5)
