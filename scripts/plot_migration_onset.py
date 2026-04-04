@@ -192,30 +192,40 @@ def compute_cell_onset(
     Returns onset map (n_rows, n_cols), value = onset week index, or NaN if not found.
     """
     n_weeks, h, w = change.shape
-    n_rows = max(1, h // cell_size)
-    n_cols = max(1, w // cell_size)
+    n_rows = h // cell_size
+    n_cols = w // cell_size
+
+    if n_rows == 0 or n_cols == 0:
+        return np.full((max(1, n_rows), max(1, n_cols)), np.nan, dtype=np.float32)
+
+    h_trim = n_rows * cell_size
+    w_trim = n_cols * cell_size
+
+    # Compute cell-level mean change per week via reshape, one week at a time
+    # to keep memory manageable for large rasters (e.g. 3km at 5562x11484).
+    cell_means = np.empty((n_weeks, n_rows, n_cols), dtype=np.float32)
+    for t in range(n_weeks):
+        week_slice = np.ascontiguousarray(change[t, :h_trim, :w_trim])
+        reshaped = week_slice.reshape(n_rows, cell_size, n_cols, cell_size)
+        cell_means[t] = np.nanmean(reshaped, axis=(1, 3))
+
+    mu = np.nanmean(cell_means, axis=0)
+    sigma = np.nanstd(cell_means, axis=0)
+
+    # Mask cells with no variation (ocean / constant abundance)
+    valid = sigma >= 1e-9
+    sigma_safe = np.where(valid, sigma, np.nan)
+    z = (cell_means - mu) / sigma_safe
+
+    # Find first week in search window where z >= threshold
+    search_z = z[search_start:search_end]
+    above = search_z >= z_threshold
+    has_onset = np.any(above, axis=0)
+    first_idx = np.argmax(above, axis=0)
+
     onset = np.full((n_rows, n_cols), np.nan, dtype=np.float32)
-
-    for ri in range(n_rows):
-        for ci in range(n_cols):
-            r0, r1 = ri * cell_size, min((ri + 1) * cell_size, h)
-            c0, c1 = ci * cell_size, min((ci + 1) * cell_size, w)
-
-            # Mean change per week for this cell
-            cell_chg = np.array([
-                np.nanmean(change[t, r0:r1, c0:c1]) for t in range(n_weeks)
-            ])
-
-            mu = np.nanmean(cell_chg)
-            sigma = np.nanstd(cell_chg)
-            if sigma < 1e-9:
-                continue  # no variation (ocean cell or constant abundance)
-
-            z = (cell_chg - mu) / sigma
-            for t in range(search_start, search_end):
-                if z[t] >= z_threshold:
-                    onset[ri, ci] = t
-                    break
+    mask = has_onset & valid
+    onset[mask] = (first_idx[mask] + search_start).astype(np.float32)
 
     return onset
 
@@ -408,6 +418,7 @@ def plot_onset_map(
 
 
 def main():
+    global SEASON_BUFFER_WEEKS
     parser = argparse.ArgumentParser(description="Per-cell migration onset analysis")
     parser.add_argument("--species", nargs="+", default=["acafly", "comyel", "casvir"])
     parser.add_argument("--resolution", default="27km")
@@ -487,7 +498,6 @@ def main():
     data_dir = project_root / "data" / "raw"
     labels_path = project_root / "data" / "labels" / "matt_species_seasons.json"
 
-    global SEASON_BUFFER_WEEKS
     SEASON_BUFFER_WEEKS = args.season_buffer
 
     for species in args.species:
