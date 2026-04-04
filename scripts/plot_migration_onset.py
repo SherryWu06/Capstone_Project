@@ -66,6 +66,67 @@ DEFAULT_DATE_NAMES = [
     "11-08", "11-15", "11-22", "11-29", "12-06", "12-13", "12-20", "12-27",
 ]
 
+SEASON_BUFFER_WEEKS = 3
+
+
+def date_to_week_index(date_str: str, date_names: list = None) -> int | None:
+    """Convert an ISO date string (YYYY-MM-DD) to a week index in date_names."""
+    if date_names is None:
+        date_names = DEFAULT_DATE_NAMES
+    try:
+        from datetime import datetime
+        md = datetime.strptime(date_str, "%Y-%m-%d").strftime("%m-%d")
+        for i, d in enumerate(date_names):
+            if d == md:
+                return i
+        target = datetime.strptime(date_str, "%Y-%m-%d")
+        best_i, best_diff = 0, 999
+        for i, d in enumerate(date_names):
+            dt = datetime.strptime(f"2023-{d}", "%Y-%m-%d")
+            diff = abs((target - dt).days)
+            if diff < best_diff:
+                best_diff = diff
+                best_i = i
+        return best_i
+    except (ValueError, TypeError):
+        return None
+
+
+def get_species_search_windows(species_data: dict, date_names: list) -> dict | None:
+    """
+    Derive per-species onset search windows from eBird season dates,
+    with SEASON_BUFFER_WEEKS padding on each side to allow detection
+    of early-shifting migration.
+
+    Returns dict with spring_start, spring_end, fall_start, fall_end
+    as week indices, or None if season dates are unavailable.
+    """
+    season_dates = species_data.get("season_dates")
+    if not season_dates:
+        return None
+
+    seasons = {s["season"]: s for s in season_dates}
+    pre = seasons.get("prebreeding_migration")
+    post = seasons.get("postbreeding_migration")
+    if not pre or not post:
+        return None
+
+    pre_start = date_to_week_index(pre["start_date"], date_names)
+    pre_end = date_to_week_index(pre["end_date"], date_names)
+    post_start = date_to_week_index(post["start_date"], date_names)
+    post_end = date_to_week_index(post["end_date"], date_names)
+
+    if any(v is None for v in (pre_start, pre_end, post_start, post_end)):
+        return None
+
+    n_weeks = len(date_names)
+    return {
+        "spring_start": max(0, pre_start - SEASON_BUFFER_WEEKS),
+        "spring_end": min(n_weeks, pre_end + SEASON_BUFFER_WEEKS + 1),
+        "fall_start": max(0, post_start - SEASON_BUFFER_WEEKS),
+        "fall_end": min(n_weeks, post_end + SEASON_BUFFER_WEEKS + 1),
+    }
+
 
 def get_extent_for_region(region: str, crs, full_extent: list) -> tuple:
     """
@@ -317,7 +378,7 @@ def plot_onset_map(
     ax.imshow(ab_norm, cmap="Greys", alpha=0.6, **imshow_kw)
     im = ax.imshow(
         onset_up,
-        cmap="RdYlGn_r",  # red = early, green = late
+        cmap="plasma",
         alpha=0.85,
         norm=mcolors.Normalize(vmin=week_min, vmax=week_max_display),
         **imshow_kw,
@@ -334,7 +395,7 @@ def plot_onset_map(
     date_end_label = date_names[min(week_max_display, len(date_names) - 1)]
     ax.set_title(
         f"{species.upper()} – Migration onset date by region ({season})\n"
-        f"(Red = earliest, Green = latest; showing first {display_weeks} weeks: "
+        f"(Dark = earliest, Bright = latest; showing first {display_weeks} weeks: "
         f"{date_names[week_min] if week_min < len(date_names) else week_min}–{date_end_label})",
         fontsize=13,
     )
@@ -380,28 +441,32 @@ def main():
         help="Generate migration onset map (first week of movement per cell)",
     )
     parser.add_argument(
-        "--onset-spring-start", type=int, default=5,
-        help="First week to consider for spring onset search (default: 5 = ~Feb 1)",
+        "--onset-spring-start", type=int, default=None,
+        help="Override spring onset search start week (default: auto from eBird season dates, fallback 5)",
     )
     parser.add_argument(
-        "--onset-spring-end", type=int, default=30,
-        help="Last week to consider for spring onset search (default: 30 = ~Aug 2)",
+        "--onset-spring-end", type=int, default=None,
+        help="Override spring onset search end week (default: auto from eBird season dates, fallback 30)",
     )
     parser.add_argument(
-        "--onset-fall-start", type=int, default=30,
-        help="First week to consider for fall onset search (default: 30 = ~Aug 2)",
+        "--onset-fall-start", type=int, default=None,
+        help="Override fall onset search start week (default: auto from eBird season dates, fallback 30)",
     )
     parser.add_argument(
-        "--onset-fall-end", type=int, default=50,
-        help="Last week to consider for fall onset search (default: 50 = ~Dec 13)",
+        "--onset-fall-end", type=int, default=None,
+        help="Override fall onset search end week (default: auto from eBird season dates, fallback 50)",
     )
     parser.add_argument(
         "--z-threshold", type=float, default=1.5,
         help="Z-score threshold for onset detection (default: 1.5)",
     )
     parser.add_argument(
-        "--display-weeks", type=int, default=4,
-        help="Number of weeks to display on onset map, starting from the earliest detected onset (default: 4)",
+        "--display-weeks", type=int, default=6,
+        help="Number of weeks to display on onset map, starting from the earliest detected onset (default: 6)",
+    )
+    parser.add_argument(
+        "--season-buffer", type=int, default=SEASON_BUFFER_WEEKS,
+        help=f"Weeks of padding before/after eBird season dates for search window (default: {SEASON_BUFFER_WEEKS})",
     )
     args = parser.parse_args()
 
@@ -422,6 +487,9 @@ def main():
     data_dir = project_root / "data" / "raw"
     labels_path = project_root / "data" / "labels" / "matt_species_seasons.json"
 
+    global SEASON_BUFFER_WEEKS
+    SEASON_BUFFER_WEEKS = args.season_buffer
+
     for species in args.species:
         print(f"\nProcessing {species}...")
         try:
@@ -434,11 +502,13 @@ def main():
             print(f"  Skip: {e}")
             continue
 
-        # Load date names
+        # Load date names and species season data
+        species_json = {}
         try:
             with open(labels_path) as f:
-                data = json.load(f)
-            date_names = data.get(species, {}).get("DATE_NAMES", DEFAULT_DATE_NAMES)
+                all_species_data = json.load(f)
+            species_json = all_species_data.get(species, {})
+            date_names = species_json.get("DATE_NAMES", DEFAULT_DATE_NAMES)
         except Exception:
             date_names = DEFAULT_DATE_NAMES
 
@@ -458,12 +528,30 @@ def main():
             )
 
         if args.onset:
-            print(f"  Computing spring onset (weeks {args.onset_spring_start}–{args.onset_spring_end})...")
+            # Derive per-species search windows from eBird season dates + buffer,
+            # falling back to fixed defaults if not available.
+            windows = get_species_search_windows(species_json, date_names)
+            cli_override = args.onset_spring_start is not None
+
+            spring_start = args.onset_spring_start if args.onset_spring_start is not None else (windows["spring_start"] if windows else 5)
+            spring_end = args.onset_spring_end if args.onset_spring_end is not None else (windows["spring_end"] if windows else 30)
+            fall_start = args.onset_fall_start if args.onset_fall_start is not None else (windows["fall_start"] if windows else 30)
+            fall_end = args.onset_fall_end if args.onset_fall_end is not None else (windows["fall_end"] if windows else 50)
+
+            if cli_override:
+                print(f"  Using CLI override search windows for {species}")
+            elif windows:
+                print(f"  Using eBird season dates ±{args.season_buffer}wk buffer for {species}")
+            else:
+                print(f"  Using fixed default search windows for {species} (not found in season JSON)")
+
+            print(f"  Computing spring onset (weeks {spring_start}–{spring_end}, "
+                  f"{date_names[spring_start]}–{date_names[min(spring_end - 1, len(date_names) - 1)]})...")
             onset_spring = compute_cell_onset(
                 change, cell_size=args.cell_size,
                 z_threshold=args.z_threshold,
-                search_start=args.onset_spring_start,
-                search_end=args.onset_spring_end,
+                search_start=spring_start,
+                search_end=spring_end,
             )
             plot_onset_map(
                 output_dir=output_dir,
@@ -478,18 +566,18 @@ def main():
                 season="spring",
                 display_weeks=args.display_weeks,
             )
-            # Rename to indicate spring
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_spring_onset.png"
             src.rename(dst)
             print(f"  Saved as {dst}")
 
-            print(f"  Computing fall onset (weeks {args.onset_fall_start}–{args.onset_fall_end})...")
+            print(f"  Computing fall onset (weeks {fall_start}–{fall_end}, "
+                  f"{date_names[fall_start]}–{date_names[min(fall_end - 1, len(date_names) - 1)]})...")
             onset_fall = compute_cell_onset(
                 change, cell_size=args.cell_size,
                 z_threshold=args.z_threshold,
-                search_start=args.onset_fall_start,
-                search_end=args.onset_fall_end,
+                search_start=fall_start,
+                search_end=fall_end,
             )
             plot_onset_map(
                 output_dir=output_dir,
