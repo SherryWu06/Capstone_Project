@@ -4,6 +4,8 @@ pyproj>=3.0.0
 numpy>=1.24.0
 xarray>=2023.0.0
 
+geopandas>=0.14.0
+
 # Spatial analysis
 scipy>=1.10.0
 scikit-image>=0.20.0
