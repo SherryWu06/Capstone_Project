@@ -157,9 +157,20 @@ def get_cartopy_proj(crs):
 
 
 def add_basemap_features(ax):
-    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), linewidth=0.5)
-    ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.3, edgecolor="gray")
-    ax.add_feature(cfeature.BORDERS.with_scale("50m"), linewidth=0.4)
+    ax.add_feature(cfeature.LAND, facecolor="white", zorder=0)
+    ax.add_feature(cfeature.OCEAN, facecolor="white", zorder=0)
+    ax.add_feature(
+        cfeature.COASTLINE.with_scale("50m"),
+        linewidth=0.45, edgecolor="#555555", zorder=2,
+    )
+    ax.add_feature(
+        cfeature.BORDERS.with_scale("50m"),
+        linewidth=0.35, edgecolor="#777777", zorder=2,
+    )
+    ax.add_feature(
+        cfeature.STATES.with_scale("50m"),
+        linewidth=0.20, edgecolor="#aaaaaa", zorder=2,
+    )
 
 
 def compute_weekly_change(stack: np.ndarray) -> np.ndarray:
@@ -308,6 +319,18 @@ def plot_weekly_movement_maps(
     print(f"  Saved movement maps for {len(week_iter) if isinstance(week_iter, list) else n_weeks - 1} weeks to {weekly_dir}")
 
 
+def get_data_bbox(mask, pad=8):
+    """Return (r0, r1, c0, c1) bounding box of True values in mask, with padding."""
+    rows, cols = np.where(mask)
+    if len(rows) == 0 or len(cols) == 0:
+        return None
+    r0 = max(0, rows.min() - pad)
+    r1 = min(mask.shape[0], rows.max() + pad + 1)
+    c0 = max(0, cols.min() - pad)
+    c1 = min(mask.shape[1], cols.max() + pad + 1)
+    return r0, r1, c0, c1
+
+
 def plot_onset_map(
     output_dir: Path,
     species: str,
@@ -319,15 +342,19 @@ def plot_onset_map(
     region: str = "full",
     cell_size: int = 16,
     season: str = "both",
-    display_weeks: int = 4,
+    search_start: int = 0,
+    search_end: int = 51,
+    display_buffer: int = 0,
+    cap_weeks: int | None = None,
 ) -> None:
     """
     Plot onset week per cell as a spatial map.
     Each cell is colored by the week number when it first showed movement.
 
-    Only cells with onset within the first `display_weeks` weeks of the
-    earliest detected onset are shown; later detections are masked out as
-    they tend to reflect residual movement rather than true migration onset.
+    All detected onset cells within the search window are displayed.
+    display_buffer extends the display range before search_start for context.
+    cap_weeks, if set, limits display to the first N weeks from the earliest
+    detected onset — useful for focusing on where migration begins.
     """
     h, w = meta["height"], meta["width"]
     crs = meta["crs"]
@@ -344,31 +371,57 @@ def plot_onset_map(
         return
 
     week_min = int(valid_weeks.min())
-    # Cap display range to the first `display_weeks` weeks from the earliest onset
-    week_max_display = week_min + display_weeks - 1
+    week_max = int(valid_weeks.max())
 
-    # Mask cells whose onset falls outside the display window
-    onset_display = onset.copy()
-    onset_display[np.isfinite(onset_display) & (onset_display > week_max_display)] = np.nan
+    # Optional cap: focus on the first N weeks of onset
+    onset_plot = onset
+    if cap_weeks is not None:
+        cap_limit = week_min + cap_weeks - 1
+        onset_plot = onset.copy()
+        onset_plot[np.isfinite(onset_plot) & (onset_plot > cap_limit)] = np.nan
+        week_max = min(week_max, cap_limit)
 
-    n_shown = int(np.sum(np.isfinite(onset_display)))
+    display_start = max(0, search_start - display_buffer)
+    week_min_display = min(week_min, display_start)
+    week_max_display = week_max
+
+    n_shown = int(np.sum(np.isfinite(onset_plot)))
     n_total = int(np.sum(np.isfinite(onset)))
-    print(f"  Displaying {n_shown}/{n_total} cells with onset in weeks {week_min}–{week_max_display} "
-          f"({date_names[week_min] if week_min < len(date_names) else week_min}–"
-          f"{date_names[min(week_max_display, len(date_names)-1)]})")
+    if cap_weeks is not None:
+        print(f"  Displaying {n_shown}/{n_total} cells (capped to first {cap_weeks} weeks: "
+              f"{week_min}–{week_max}, "
+              f"{date_names[week_min] if week_min < len(date_names) else week_min}–"
+              f"{date_names[min(week_max, len(date_names)-1)]})")
+    else:
+        print(f"  Displaying {n_total} cells with onset in weeks {week_min}–{week_max} "
+              f"({date_names[week_min] if week_min < len(date_names) else week_min}–"
+              f"{date_names[min(week_max, len(date_names)-1)]})")
 
     # Upsample onset to raster resolution
-    onset_up = np.kron(onset_display, np.ones((cell_size, cell_size)))
+    onset_up = np.kron(onset_plot, np.ones((cell_size, cell_size)))
     onset_up = onset_up[:h, :w]
     onset_up[onset_up == 0] = np.nan  # 0 means no onset found
 
-    # Background abundance
+    # Background abundance (compute before crop so both layers match)
     s = stack.astype(np.float64)
     s[~np.isfinite(s)] = np.nan
     mean_ab = np.nanmean(s, axis=0)
     ab_norm = np.nan_to_num(mean_ab, nan=0)
     p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
     ab_norm = np.clip(ab_norm / p95, 0, 1)
+
+    # Auto-crop to valid onset data so the map isn't mostly blank
+    valid_mask = np.isfinite(onset_up)
+    bbox = get_data_bbox(valid_mask, pad=12)
+    if bbox is not None:
+        r0, r1, c0, c1 = bbox
+        onset_up = onset_up[r0:r1, c0:c1]
+        ab_norm = ab_norm[r0:r1, c0:c1]
+        left, bottom, right, top = bounds[0], bounds[1], bounds[2], bounds[3]
+        xres = (right - left) / w
+        yres = (top - bottom) / h
+        extent = [left + c0 * xres, left + c1 * xres,
+                  top - r1 * yres, top - r0 * yres]
 
     imshow_kw = {"extent": extent, "origin": "upper", "aspect": "auto"}
     if proj is not None:
@@ -385,28 +438,49 @@ def plot_onset_map(
         except (ValueError, TypeError):
             pass
 
-    ax.imshow(ab_norm, cmap="Greys", alpha=0.6, **imshow_kw)
+    ax.imshow(ab_norm, cmap="Greys", alpha=0.18, **imshow_kw)
+
+    weeks_shown = np.arange(week_min_display, week_max_display + 1)
+    anchor_colors = ["#c62828", "#e76f51", "#f4a261", "#e9c46a", "#90be6d", "#2e7d32"]
+    n = len(weeks_shown)
+    if n <= len(anchor_colors):
+        colors = anchor_colors[:n]
+    else:
+        cmap_interp = mcolors.LinearSegmentedColormap.from_list("onset", anchor_colors, N=n)
+        colors = [mcolors.to_hex(cmap_interp(i / max(n - 1, 1))) for i in range(n)]
+    cmap = mcolors.ListedColormap(colors)
+    cmap.set_bad((1, 1, 1, 0))
+    bounds_norm = np.arange(week_min_display - 0.5, week_max_display + 1.5, 1)
+    norm = mcolors.BoundaryNorm(bounds_norm, cmap.N)
+
     im = ax.imshow(
         onset_up,
-        cmap="plasma",
-        alpha=0.85,
-        norm=mcolors.Normalize(vmin=week_min, vmax=week_max_display),
+        cmap=cmap,
+        norm=norm,
+        alpha=0.95,
+        interpolation="nearest",
         **imshow_kw,
     )
 
-    # Colorbar with date labels across the display window
-    cbar = plt.colorbar(im, ax=ax, label="Migration onset (week)", shrink=0.7)
-    tick_weeks = np.linspace(week_min, week_max_display, display_weeks, dtype=int)
+    # Colorbar with date labels (subsample ticks if many weeks)
+    cbar = plt.colorbar(im, ax=ax, shrink=0.78, pad=0.02)
+    max_ticks = 10
+    if len(weeks_shown) <= max_ticks:
+        tick_weeks = weeks_shown
+    else:
+        tick_idx = np.linspace(0, len(weeks_shown) - 1, max_ticks, dtype=int)
+        tick_weeks = weeks_shown[tick_idx]
     cbar.set_ticks(tick_weeks)
     cbar.set_ticklabels([
         date_names[wk] if wk < len(date_names) else f"W{wk}" for wk in tick_weeks
     ])
+    cbar.set_label("Migration onset week", fontsize=11)
 
-    date_end_label = date_names[min(week_max_display, len(date_names) - 1)]
+    date_start_label = date_names[week_min] if week_min < len(date_names) else f"W{week_min}"
+    date_end_label = date_names[min(week_max, len(date_names) - 1)]
     ax.set_title(
-        f"{species.upper()} – Migration onset date by region ({season})\n"
-        f"(Dark = earliest, Bright = latest; showing first {display_weeks} weeks: "
-        f"{date_names[week_min] if week_min < len(date_names) else week_min}–{date_end_label})",
+        f"{species.upper()} – Migration onset by region ({season})\n"
+        f"(Red = earliest, Green = latest; {date_start_label}–{date_end_label})",
         fontsize=13,
     )
     plt.tight_layout()
@@ -472,8 +546,12 @@ def main():
         help="Z-score threshold for onset detection (default: 1.5)",
     )
     parser.add_argument(
-        "--display-weeks", type=int, default=6,
-        help="Number of weeks to display on onset map, starting from the earliest detected onset (default: 6)",
+        "--display-weeks", type=int, default=0,
+        help="Extra weeks of buffer before the search window start for display context (default: 0)",
+    )
+    parser.add_argument(
+        "--cap-weeks", type=int, default=None,
+        help="Show only the first N weeks of onset from the earliest detection (focus on migration front)",
     )
     parser.add_argument(
         "--season-buffer", type=int, default=SEASON_BUFFER_WEEKS,
@@ -574,7 +652,10 @@ def main():
                 region=args.region,
                 cell_size=args.cell_size,
                 season="spring",
-                display_weeks=args.display_weeks,
+                search_start=spring_start,
+                search_end=spring_end,
+                display_buffer=args.display_weeks,
+                cap_weeks=args.cap_weeks,
             )
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_spring_onset.png"
@@ -600,7 +681,10 @@ def main():
                 region=args.region,
                 cell_size=args.cell_size,
                 season="fall",
-                display_weeks=args.display_weeks,
+                search_start=fall_start,
+                search_end=fall_end,
+                display_buffer=args.display_weeks,
+                cap_weeks=args.cap_weeks,
             )
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_fall_onset.png"
