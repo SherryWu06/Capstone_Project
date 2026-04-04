@@ -4,6 +4,7 @@ data/processed/
 
 # Generated outputs (attention maps, predictions)
 outputs/
+*.txt
 
 # Scratch / test files (not for sharing)
 scratch/
