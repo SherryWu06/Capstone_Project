@@ -351,6 +351,7 @@ def plot_onset_map(
     search_end: int = 51,
     display_buffer: int = 0,
     cap_weeks: int | None = None,
+    clean: bool = False,
 ) -> None:
     """
     Plot onset week per cell as a spatial map.
@@ -473,13 +474,21 @@ def plot_onset_map(
     ])
     cbar.set_label("Migration onset week", fontsize=11)
 
-    date_start_label = date_names[week_min] if week_min < len(date_names) else f"W{week_min}"
-    date_end_label = date_names[min(week_max, len(date_names) - 1)]
-    ax.set_title(
-        f"{species.upper()} – Migration onset by region ({season})\n"
-        f"(Blue = earliest, Red = latest; {date_start_label}–{date_end_label})",
-        fontsize=13,
-    )
+    if clean:
+        ax.set_title("")
+        try:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        except Exception:
+            pass
+    else:
+        date_start_label = date_names[week_min] if week_min < len(date_names) else f"W{week_min}"
+        date_end_label = date_names[min(week_max, len(date_names) - 1)]
+        ax.set_title(
+            f"{species.upper()} – Migration onset by region ({season})\n"
+            f"(Blue = earliest, Red = latest; {date_start_label}–{date_end_label})",
+            fontsize=13,
+        )
     plt.tight_layout()
 
     out_path = output_dir / f"{species}_migration_onset.png"
@@ -548,6 +557,10 @@ def main():
     parser.add_argument(
         "--cap-weeks", type=int, default=None,
         help="Show only the first N weeks of onset from the earliest detection (focus on migration front)",
+    )
+    parser.add_argument(
+        "--clean", action="store_true",
+        help="Remove title and axis labels for presentation-ready maps",
     )
     parser.add_argument(
         "--season-buffer", type=int, default=SEASON_BUFFER_WEEKS,
@@ -643,6 +656,7 @@ def main():
                 search_end=spring_end,
                 display_buffer=args.display_weeks,
                 cap_weeks=args.cap_weeks,
+                clean=args.clean,
             )
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_spring_onset.png"
@@ -672,6 +686,7 @@ def main():
                 search_end=fall_end,
                 display_buffer=args.display_weeks,
                 cap_weeks=args.cap_weeks,
+                clean=args.clean,
             )
             src = output_dir / f"{species}_migration_onset.png"
             dst = output_dir / f"{species}_fall_onset.png"
