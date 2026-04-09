@@ -336,31 +336,25 @@ def get_data_bbox(mask, pad=8):
     return r0, r1, c0, c1
 
 
-def plot_onset_map(
-    output_dir: Path,
-    species: str,
+def prepare_onset_map_layers(
     onset: np.ndarray,
     stack: np.ndarray,
     date_names: list,
     meta: dict,
-    use_basemap: bool = False,
     region: str = "full",
     cell_size: int = 16,
-    season: str = "both",
     search_start: int = 0,
     search_end: int = 51,
     display_buffer: int = 0,
     cap_weeks: int | None = None,
-    clean: bool = False,
-) -> None:
+) -> dict | None:
     """
-    Plot onset week per cell as a spatial map.
-    Each cell is colored by the week number when it first showed movement.
+    Build lon/lat onset and abundance layers (same preprocessing as plot_onset_map).
 
-    All detected onset cells within the search window are displayed.
-    display_buffer extends the display range before search_start for context.
-    cap_weeks, if set, limits display to the first N weeks from the earliest
-    detected onset — useful for focusing on where migration begins.
+    Returns None if there is no valid onset anywhere; otherwise a dict with:
+      onset_ll, ab_ll, img_ext, lon_min, lon_max, lat_min, lat_max,
+      week_min, week_max, week_min_display, week_max_display,
+      n_shown, n_total, date_start_label, date_end_label
     """
     h, w = meta["height"], meta["width"]
     src_crs = meta["crs"]
@@ -372,8 +366,7 @@ def plot_onset_map(
 
     valid_weeks = onset[np.isfinite(onset)]
     if len(valid_weeks) == 0:
-        print(f"  No onset found for {species}, skipping onset map.")
-        return
+        return None
 
     week_min = int(valid_weeks.min())
     week_max = int(valid_weeks.max())
@@ -401,12 +394,10 @@ def plot_onset_map(
               f"({date_names[week_min] if week_min < len(date_names) else week_min}–"
               f"{date_names[min(week_max, len(date_names)-1)]})")
 
-    # Upsample onset to raster resolution
     onset_up = np.kron(onset_plot, np.ones((cell_size, cell_size)))
     onset_up = onset_up[:h, :w]
     onset_up[onset_up == 0] = np.nan
 
-    # Background abundance
     s = stack.astype(np.float64)
     s[~np.isfinite(s)] = np.nan
     mean_ab = np.nanmean(s, axis=0)
@@ -414,7 +405,6 @@ def plot_onset_map(
     p95 = np.percentile(ab_norm[ab_norm > 0], 95) + 1e-9
     ab_norm = np.clip(ab_norm / p95, 0, 1)
 
-    # ----- Reproject to lon/lat for plotting -----
     onset_ll, img_ext = reproject_to_lonlat(
         onset_up, src_crs, src_transform,
         lon_min, lon_max, lat_min, lat_max,
@@ -423,8 +413,85 @@ def plot_onset_map(
         ab_norm, src_crs, src_transform,
         lon_min, lon_max, lat_min, lat_max,
     )
-    # NaN-ify zeros that came from nodata in the reprojected onset
     onset_ll[onset_ll == 0] = np.nan
+
+    date_start_label = date_names[week_min] if week_min < len(date_names) else f"W{week_min}"
+    date_end_label = date_names[min(week_max, len(date_names) - 1)]
+
+    return {
+        "onset_ll": onset_ll,
+        "ab_ll": ab_ll,
+        "img_ext": img_ext,
+        "lon_min": lon_min,
+        "lon_max": lon_max,
+        "lat_min": lat_min,
+        "lat_max": lat_max,
+        "week_min": week_min,
+        "week_max": week_max,
+        "week_min_display": week_min_display,
+        "week_max_display": week_max_display,
+        "n_shown": n_shown,
+        "n_total": n_total,
+        "date_start_label": date_start_label,
+        "date_end_label": date_end_label,
+    }
+
+
+def plot_onset_map(
+    output_dir: Path,
+    species: str,
+    onset: np.ndarray,
+    stack: np.ndarray,
+    date_names: list,
+    meta: dict,
+    use_basemap: bool = False,
+    region: str = "full",
+    cell_size: int = 16,
+    season: str = "both",
+    search_start: int = 0,
+    search_end: int = 51,
+    display_buffer: int = 0,
+    cap_weeks: int | None = None,
+    clean: bool = False,
+) -> None:
+    """
+    Plot onset week per cell as a spatial map.
+    Each cell is colored by the week number when it first showed movement.
+
+    All detected onset cells within the search window are displayed.
+    display_buffer extends the display range before search_start for context.
+    cap_weeks, if set, limits display to the first N weeks from the earliest
+    detected onset — useful for focusing on where migration begins.
+    """
+    layers = prepare_onset_map_layers(
+        onset=onset,
+        stack=stack,
+        date_names=date_names,
+        meta=meta,
+        region=region,
+        cell_size=cell_size,
+        search_start=search_start,
+        search_end=search_end,
+        display_buffer=display_buffer,
+        cap_weeks=cap_weeks,
+    )
+    if layers is None:
+        print(f"  No onset found for {species}, skipping onset map.")
+        return
+
+    onset_ll = layers["onset_ll"]
+    ab_ll = layers["ab_ll"]
+    img_ext = layers["img_ext"]
+    lon_min = layers["lon_min"]
+    lon_max = layers["lon_max"]
+    lat_min = layers["lat_min"]
+    lat_max = layers["lat_max"]
+    week_min = layers["week_min"]
+    week_max = layers["week_max"]
+    week_min_display = layers["week_min_display"]
+    week_max_display = layers["week_max_display"]
+    date_start_label = layers["date_start_label"]
+    date_end_label = layers["date_end_label"]
 
     # ----- Plot in plain lon/lat -----
     fig, ax = plt.subplots(1, 1, figsize=(14, 8))
