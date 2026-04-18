@@ -34,6 +34,32 @@ import geopandas as gpd
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 _BORDERS_CACHE: dict = {}
+_TAXONOMY_CACHE: dict = {}
+
+
+def get_common_name(species_code: str, taxonomy_path: Path | None = None) -> str:
+    """
+    Look up the display name for a species_code in the eBird taxonomy spreadsheet.
+    Returns "Common Name (Scientific name)".
+    Falls back to species_code.upper() if not found or the file is unavailable.
+    """
+    if taxonomy_path is None:
+        taxonomy_path = Path(__file__).resolve().parent.parent / "eBird_taxonomy_v2025.xlsx"
+
+    if "df" not in _TAXONOMY_CACHE:
+        try:
+            import pandas as pd
+            df = pd.read_excel(taxonomy_path, usecols=["SPECIES_CODE", "PRIMARY_COM_NAME", "SCI_NAME"])
+            df["SPECIES_CODE"] = df["SPECIES_CODE"].str.strip().str.lower()
+            _TAXONOMY_CACHE["df"] = {
+                row["SPECIES_CODE"]: f"{row['PRIMARY_COM_NAME']} ({row['SCI_NAME']})"
+                for _, row in df.iterrows()
+            }
+        except Exception as e:
+            print(f"  Warning: could not load eBird taxonomy ({e}); species codes will be used as-is.")
+            _TAXONOMY_CACHE["df"] = {}
+
+    return _TAXONOMY_CACHE["df"].get(species_code.strip().lower(), species_code.upper())
 
 
 def _load_borders():
@@ -313,7 +339,7 @@ def plot_weekly_movement_maps(
         )
         ax.set_xlim(lon_min, lon_max)
         ax.set_ylim(lat_min, lat_max)
-        ax.set_title(f"{species.upper()} – Movement week of {date_str}", fontsize=14)
+        ax.set_title(f"{get_common_name(species)} – Movement week of {date_str}", fontsize=14)
         plt.colorbar(im, ax=ax, label="Abundance change (week-to-week)", shrink=0.8)
         plt.tight_layout()
 
@@ -502,13 +528,13 @@ def plot_onset_map(
     imshow_kw = {"extent": img_ext, "origin": "upper"}
     ax.imshow(ab_ll, cmap="Greys", alpha=0.18, **imshow_kw)
 
-    # Discrete colormap: turbo (blue=earliest → red=latest)
-    # Turbo has high perceptual contrast between adjacent steps, making each
-    # onset week visually distinct — unlike warm ramps where orange/yellow blend.
+    # Discrete colormap: viridis (purple=earliest → yellow=latest)
+    # Viridis is perceptually uniform and colorblind-safe, making each
+    # onset week visually distinct across all forms of color vision deficiency.
     weeks_shown = np.arange(week_min_display, week_max_display + 1)
     n = len(weeks_shown)
-    turbo = plt.get_cmap("turbo")
-    colors = [mcolors.to_hex(turbo(i / max(n - 1, 1))) for i in range(n)]
+    viridis = plt.get_cmap("viridis")
+    colors = [mcolors.to_hex(viridis(i / max(n - 1, 1))) for i in range(n)]
     cmap = mcolors.ListedColormap(colors)
     cmap.set_bad((1, 1, 1, 0))
     bounds_norm = np.arange(week_min_display - 0.5, week_max_display + 1.5, 1)
@@ -552,8 +578,8 @@ def plot_onset_map(
         date_start_label = date_names[week_min] if week_min < len(date_names) else f"W{week_min}"
         date_end_label = date_names[min(week_max, len(date_names) - 1)]
         ax.set_title(
-            f"{species.upper()} – Migration onset by region ({season})\n"
-            f"(Blue = earliest, Red = latest; {date_start_label}–{date_end_label})",
+            f"{get_common_name(species)} – Migration movements by region ({season})\n"
+            f"(Purple = earliest, Yellow = latest; {date_start_label}–{date_end_label})",
             fontsize=13,
         )
     plt.tight_layout()
