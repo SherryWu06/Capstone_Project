@@ -118,6 +118,56 @@ python scripts/plot_attention_maps.py --attention-dir outputs/mil_inspect/test -
 
 Use `--attention-dir outputs/mil_inspect/train` for train species. Add `--weekly` for per-week maps.
 
+### Migration onset analysis
+
+Two scripts analyse *where* and *when* movement begins, independently of the MIL classifier.  Both use a z-score threshold on week-to-week abundance change to determine the first week each spatial cell shows significant movement.  Search windows default to eBird season dates (± a buffer) when available, with fixed fallbacks otherwise.
+
+**Static PNG maps** (`plot_migration_onset.py`):
+
+```bash
+# Per-week pixel-level movement maps
+python scripts/plot_migration_onset.py --species acafly --weekly --basemap --region north_america
+
+# Migration onset map (spring + fall, one PNG each)
+python scripts/plot_migration_onset.py --species acafly norhar2 --onset --basemap --region lower_48
+
+# Fully manual search windows
+python scripts/plot_migration_onset.py --species acafly --onset \
+    --onset-spring-start 8 --onset-spring-end 25 \
+    --onset-fall-start 30 --onset-fall-end 48
+```
+
+Outputs: `{species}_spring_onset.png`, `{species}_fall_onset.png`, and (if `--weekly`) per-week PNGs under `movement/{species}/`.
+
+**Interactive HTML maps** (`plot_onset_interactive.py`):
+
+```bash
+# Default: lower_48 region, 27 km resolution, cell size 16
+python scripts/plot_onset_interactive.py --species acafly comyel
+
+# Higher resolution with basemap borders
+python scripts/plot_onset_interactive.py --species acafly --resolution 3km --cell-size 3 --basemap --region lower_48_plus
+
+# Shorter chart title (presentation mode)
+python scripts/plot_onset_interactive.py --species acafly --clean
+```
+
+Outputs per species: `{species}_spring_onset_interactive.html` and `{species}_fall_onset_interactive.html`.  Hovering shows the week index and calendar date label.  Colors cycle through a 7-step colorblind-safe palette anchored by month.
+
+**Key flags (both scripts):**
+
+| Flag | Description |
+|------|-------------|
+| `--resolution` | `3km`, `9km`, or `27km` (default: `27km`) |
+| `--cell-size` | Grid cell size in pixels for onset aggregation (default: 16) |
+| `--region` | `full`, `north_america`, `americas`, `lower_48`, `lower_48_plus` |
+| `--basemap` | Overlay Natural Earth country and state/province borders |
+| `--z-threshold` | Z-score threshold for onset detection (default: 1.5) |
+| `--season-buffer` | Weeks of padding around eBird season dates (default: 3) |
+| `--cap-weeks` | Limit display to the first N onset weeks from earliest detection |
+| `--output-dir` | Output directory (default: `outputs/presentation`) |
+
+
 ### Matt's data (data/raw/Matt/)
 
 For TIF files from Matt (flat layout, no config.json):
@@ -148,3 +198,7 @@ from src.feature_extraction import compute_global_features
 stack, meta = load_weekly_stack(Path("data/raw"), species="yebsap-example", resolution="27km")
 features = compute_global_features(stack)
 ```
+
+## Outputs
+
+To view generated graphs, please visit our public Google Drive folder here: https://drive.google.com/drive/folders/1-vCLHmB1t1suJsvxOqXc6i0kHHHWTtLZ?usp=drive_link
