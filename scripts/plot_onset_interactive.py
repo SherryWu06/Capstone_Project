@@ -97,6 +97,66 @@ def _geo_border_traces(lon_min: float, lon_max: float, lat_min: float, lat_max: 
     return traces
 
 
+# 7-color colorblind-safe palette: IBM violet prepended to Okabe-Ito 6
+# Order: Violet → Deep Blue → Sky Blue → Teal Green → Soft Yellow → Orange → Vermilion
+_COLORBLIND_7 = ["#6929C4", "#0072B2", "#56B4E9", "#009E73", "#F0E442", "#E69F00", "#D55E00"]
+
+
+def _month_colorbar_ticks(
+    week_min: int, week_max: int, date_names: list[str]
+) -> tuple[list[float], list[str]]:
+    """
+    Return (tickvals, ticktext) for a Plotly colorbar where each tick is placed
+    at the middle week of each calendar month present in [week_min, week_max].
+
+    Uses the MM-DD date_names list already in memory — no external lookup needed.
+    """
+    from datetime import datetime
+    from collections import OrderedDict
+
+    month_weeks: OrderedDict[str, list[int]] = OrderedDict()
+    for w in range(week_min, week_max + 1):
+        if w < len(date_names):
+            try:
+                month = datetime.strptime(f"2023-{date_names[w]}", "%Y-%m-%d").strftime("%b")
+            except ValueError:
+                month = f"W{w}"
+        else:
+            month = f"W{w}"
+        month_weeks.setdefault(month, []).append(w)
+
+    tickvals: list[float] = []
+    ticktext: list[str] = []
+    for month, weeks in month_weeks.items():
+        tickvals.append(float(weeks[len(weeks) // 2]))
+        ticktext.append(month)
+    return tickvals, ticktext
+
+
+def _month_colorscale(
+    week_min: int, week_max: int, tickvals: list[float]
+) -> list[list]:
+    """
+    Build a Plotly colorscale with one Okabe-Ito anchor color per month,
+    each placed at that month's proportional position in [week_min, week_max].
+    Endpoints are always pinned to 0.0 and 1.0 as Plotly requires.
+    """
+    span = max(week_max - week_min, 1)
+    n = len(tickvals)
+    colorscale = []
+    for i, tv in enumerate(tickvals):
+        pos = (tv - week_min) / span
+        pos = max(0.0, min(1.0, pos))
+        color = _COLORBLIND_7[min(i, len(_COLORBLIND_7) - 1)]
+        colorscale.append([pos, color])
+    # Ensure Plotly's required 0.0 and 1.0 endpoints
+    if colorscale[0][0] > 0.0:
+        colorscale.insert(0, [0.0, colorscale[0][1]])
+    if colorscale[-1][0] < 1.0:
+        colorscale.append([1.0, colorscale[-1][1]])
+    return colorscale
+
+
 def export_onset_plotly_html(
     *,
     layers: dict,
@@ -123,22 +183,29 @@ def export_onset_plotly_html(
     y_coords = np.linspace(lat_max, lat_min, h)
     hover_m = _week_date_hover_strings(onset_ll, date_names)
 
+    com_name = pmo.get_common_name(species)
     if title_clean:
-        title = f"{species.upper()} · {season} onset"
+        title = f"{com_name} · {season} onset"
     else:
         title = (
-            f"{species.upper()} – Migration onset ({season})<br>"
-            f"<sup>Blue = earliest, red = latest; {date_start_label}–{date_end_label}</sup>"
+            f"{com_name} – Migration movements ({season})<br>"
+            f"<sup>Purple = earliest, yellow = latest; {date_start_label}–{date_end_label}</sup>"
         )
 
+    cb_tickvals, cb_ticktext = _month_colorbar_ticks(week_min_display, week_max_display, date_names)
+    cb_colorscale = _month_colorscale(week_min_display, week_max_display, cb_tickvals)
     heatmap = go.Heatmap(
         x=x_coords,
         y=y_coords,
         z=onset_ll,
         zmin=float(week_min_display),
         zmax=float(week_max_display),
-        colorscale="Turbo",
-        colorbar=dict(title="Onset week index"),
+        colorscale=cb_colorscale,
+        colorbar=dict(
+            title="Movement Index by Month",
+            tickvals=cb_tickvals,
+            ticktext=cb_ticktext,
+        ),
         text=hover_m,
         hovertemplate="lon=%{x:.4f}<br>lat=%{y:.4f}<br>%{text}<extra></extra>",
         showscale=True,
